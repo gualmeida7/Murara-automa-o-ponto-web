@@ -39,7 +39,7 @@ import pandas as pd
 # ---------------------------------------------------------------------------
 # Posicoes 0-indexed, seguindo o padrao mais comum de REP-P (Portaria 671/2021)
 # para registros tipo 3 (marcacao de ponto efetuada por empregado):
-#   NSR (9) + TIPO (1) + PIS (12) + DATA/HORA (12, AAAAMMDDHHMM)
+#   NSR (9) + TIPO (1) + PIS (12) + DATA/HORA (12, AAAAMMDDHHMM)a
 LAYOUT_TIPO3 = {
     "nsr": (0, 9),
     "tipo_registro": (9, 10),
