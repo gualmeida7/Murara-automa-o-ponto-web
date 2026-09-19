@@ -225,7 +225,27 @@ Como `ArquivoInvalidoError` é uma subclasse de `ValueError`, o
 `app_gui.py` já exibe essa mensagem numa `messagebox` sem precisar de
 nenhum ajuste adicional.
 
-## 3. Regras de negócio (COPR e Vale Alimentação)
+### PIS ou matrícula? Os dois funcionam
+
+Muitos extratos auxiliares (consignados, banco de horas) identificam o
+colaborador pela **matrícula interna** da empresa (um número curto, tipo
+"96") em vez do **PIS** (o número de 11 dígitos usado como chave em todo
+o resto do pipeline) — isso é normal, nem todo sistema de origem expõe o
+PIS. `validacao.normalizar_identificador_colaborador()` aceita as duas
+coisas: tenta casar cada valor primeiro como PIS e, se não achar, como
+matrícula, sempre gravando de volta o PIS canônico do Cadastro. Só
+levanta erro se um valor não bater com **nenhum dos dois** de ninguém no
+cadastro.
+
+Por isso, `carregar_consignados()`, `ler_banco_horas_secullum()` e
+`ler_banco_horas_adriano()` agora aceitam um parâmetro opcional
+`cadastro` — sempre que ele for passado (o `app_gui.py` e o `app_web.py`
+já fazem isso automaticamente), a normalização acontece na hora do
+carregamento, antes mesmo da checagem pré-voo. Sem esse parâmetro, o
+comportamento é o mesmo de antes (só aceita PIS), então código antigo que
+chamava essas funções sem `cadastro=` continua funcionando.
+
+
 
 Em `consolidar_mes()`:
 

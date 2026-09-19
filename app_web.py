@@ -244,12 +244,13 @@ if st.session_state.get("arquivos_confirmados"):
         arquivos = st.session_state.arquivos_confirmados
         try:
             cadastro = carregar_cadastro_colaboradores(arquivos["cadastro"])
-            consignados = carregar_consignados(arquivos["consignados"])
+            consignados = carregar_consignados(arquivos["consignados"], cadastro=cadastro)
             banco_secullum = (
-                ler_banco_horas_secullum(arquivos["banco_secullum"]) if "banco_secullum" in arquivos else None
+                ler_banco_horas_secullum(arquivos["banco_secullum"], cadastro=cadastro)
+                if "banco_secullum" in arquivos else None
             )
             banco_adriano = (
-                ler_banco_horas_adriano(arquivos["banco_adriano"], st.session_state.pis_adriano)
+                ler_banco_horas_adriano(arquivos["banco_adriano"], st.session_state.pis_adriano, cadastro=cadastro)
                 if "banco_adriano" in arquivos
                 else None
             )

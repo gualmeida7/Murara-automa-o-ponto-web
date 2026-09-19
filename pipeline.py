@@ -34,7 +34,7 @@ import pandas as pd
 from afd_parser import parse_afd, agrupar_batidas_por_dia
 from business_rules import Jornada, apurar_periodo, consolidar_mes, gerar_fila_validacao_rh
 from banco_horas import consolidar_banco_horas, ler_banco_horas_secullum, ler_banco_horas_adriano
-from validacao import verificar_colunas, validar_pis_existem, ArquivoInvalidoError
+from validacao import verificar_colunas, validar_pis_existem, normalizar_identificador_colaborador, ArquivoInvalidoError
 from leitura_arquivos import ler_arquivo_generico
 
 # ---------------------------------------------------------------------------
@@ -102,8 +102,17 @@ def montar_jornadas(df_cadastro: pd.DataFrame) -> dict[str, Jornada]:
     return jornadas
 
 
-def carregar_consignados(caminho: str) -> pd.DataFrame:
-    """Extrato de consignados. Espera colunas matricula/pis + valor_desconto."""
+def carregar_consignados(caminho: str, cadastro: pd.DataFrame | None = None) -> pd.DataFrame:
+    """
+    Extrato de consignados. Espera colunas matricula/pis + valor_desconto.
+
+    Passe `cadastro` (o DataFrame já carregado de
+    `carregar_cadastro_colaboradores`) sempre que possível: muitos
+    extratos de consignados identificam o colaborador pela MATRÍCULA
+    interna, não pelo PIS, e sem o cadastro em mãos não dá para saber
+    qual dos dois está na coluna de identificação — veja
+    `validacao.normalizar_identificador_colaborador` para o porquê.
+    """
     df = ler_arquivo_generico(caminho, "Extrato de Consignados")
     col_id = next((c for c in df.columns if "pis" in c or "matricula" in c), None)
     col_valor = next((c for c in df.columns if "valor" in c or "desconto" in c), None)
@@ -115,6 +124,8 @@ def carregar_consignados(caminho: str) -> pd.DataFrame:
         )
     out = df[[col_id, col_valor]].rename(columns={col_id: "pis", col_valor: "valor_consignado"})
     out["pis"] = out["pis"].astype(str).str.strip()
+    if cadastro is not None:
+        out = normalizar_identificador_colaborador(out, "pis", cadastro, "Extrato de Consignados", caminho)
     return out.groupby("pis", as_index=False)["valor_consignado"].sum()
 
 
@@ -417,9 +428,9 @@ if __name__ == "__main__":
     # checagem pre-voo ANTES do processamento pesado do AFD - se um PIS
     # estiver errado em algum desses arquivos, a usuaria fica sabendo em
     # segundos, sem esperar o AFD inteiro ser processado pra descobrir.
-    consignados = carregar_consignados(CAMINHO_CONSIGNADOS)
-    banco_secullum = ler_banco_horas_secullum(CAMINHO_BANCO_HORAS_SECULLUM) if Path(CAMINHO_BANCO_HORAS_SECULLUM).exists() else None
-    banco_adriano = ler_banco_horas_adriano(CAMINHO_PLANILHA_ADRIANO, PIS_ADRIANO) if Path(CAMINHO_PLANILHA_ADRIANO).exists() else None
+    consignados = carregar_consignados(CAMINHO_CONSIGNADOS, cadastro=cadastro)
+    banco_secullum = ler_banco_horas_secullum(CAMINHO_BANCO_HORAS_SECULLUM, cadastro=cadastro) if Path(CAMINHO_BANCO_HORAS_SECULLUM).exists() else None
+    banco_adriano = ler_banco_horas_adriano(CAMINHO_PLANILHA_ADRIANO, PIS_ADRIANO, cadastro=cadastro) if Path(CAMINHO_PLANILHA_ADRIANO).exists() else None
 
     executar_checagens_preflight(
         cadastro, consignados, banco_secullum, banco_adriano,

@@ -24,16 +24,20 @@ from __future__ import annotations
 
 import pandas as pd
 
-from validacao import verificar_colunas, ArquivoInvalidoError
+from validacao import verificar_colunas, normalizar_identificador_colaborador, ArquivoInvalidoError
 from leitura_arquivos import ler_arquivo_generico
 
 
-def ler_banco_horas_secullum(caminho_export: str) -> pd.DataFrame:
+def ler_banco_horas_secullum(caminho_export: str, cadastro: pd.DataFrame | None = None) -> pd.DataFrame:
     """
     Le o relatorio de banco de horas exportado do proprio Secullum
     (cobre o caso do "Sidney"). Espera colunas Matricula/PIS e Saldo
     (em horas, podendo ser negativo). Ajuste os nomes de coluna abaixo
     para bater com o export real do seu Secullum.
+
+    Passe `cadastro` sempre que possível: o Secullum costuma identificar
+    o colaborador pela matrícula interna, não pelo PIS — veja
+    `validacao.normalizar_identificador_colaborador`.
     """
     df = ler_arquivo_generico(caminho_export, "Banco de Horas do Secullum")
 
@@ -46,17 +50,25 @@ def ler_banco_horas_secullum(caminho_export: str) -> pd.DataFrame:
         )
     out = df[[coluna_pis, coluna_saldo]].rename(columns={coluna_pis: "pis", coluna_saldo: "saldo_banco_horas"})
     out["pis"] = out["pis"].astype(str).str.strip()
+    if cadastro is not None:
+        out = normalizar_identificador_colaborador(out, "pis", cadastro, "Banco de Horas do Secullum", caminho_export)
     out["fonte"] = "secullum_sidney"
     return out
 
 
-def ler_banco_horas_adriano(caminho_planilha: str, pis_adriano: str, sheet_name: str | int = 0) -> pd.DataFrame:
+def ler_banco_horas_adriano(
+    caminho_planilha: str, pis_adriano: str, sheet_name: str | int = 0, cadastro: pd.DataFrame | None = None
+) -> pd.DataFrame:
     """
     Le a planilha semanal paralela do Adriano e calcula o saldo do periodo.
 
     Formato esperado da planilha (ajuste os nomes de coluna conforme a
     planilha real):
         semana | horas_extras | horas_debito | saldo_anterior
+
+    `pis_adriano` aceita tanto o PIS quanto a matrícula dele — se
+    `cadastro` for informado, o valor é resolvido para o PIS canônico
+    (mesma lógica usada para os outros arquivos auxiliares).
 
     Retorna uma unica linha (pis=pis_adriano, saldo_banco_horas=<acumulado>)
     pronta para entrar no mesmo merge do restante da equipe.
@@ -78,11 +90,16 @@ def ler_banco_horas_adriano(caminho_planilha: str, pis_adriano: str, sheet_name:
     saldo_periodo = (df["horas_extras"].fillna(0) - df["horas_debito"].fillna(0)).sum()
     saldo_total = round(saldo_anterior + float(saldo_periodo), 2)
 
-    return pd.DataFrame([{
+    resultado = pd.DataFrame([{
         "pis": str(pis_adriano).strip(),
         "saldo_banco_horas": saldo_total,
         "fonte": "planilha_adriano",
     }])
+    if cadastro is not None:
+        resultado = normalizar_identificador_colaborador(
+            resultado, "pis", cadastro, "Planilha semanal do Adriano (PIS/matrícula informado)", caminho_planilha
+        )
+    return resultado
 
 
 def consolidar_banco_horas(

@@ -11,7 +11,6 @@ qual arquivo e qual coluna esta faltando.
 
 from __future__ import annotations
 
-from typing import Iterable
 import pandas as pd
 
 
@@ -47,30 +46,9 @@ def verificar_colunas(
         )
 
 
-def _normalizar_id(valor: object) -> str:
-    """
-    Função auxiliar para normalizar PIS/Matrícula:
-    - Remove decimais flutuantes do Pandas (ex: '96.0' -> '96')
-    - Remove espaços em branco
-    - Remove zeros à esquerda (ex: '0096' -> '96')
-    """
-    if pd.isna(valor):
-        return ""
-    
-    texto = str(valor).strip()
-    
-    # Caso venha como float convertido para string (ex: '96.0')
-    if texto.endswith(".0"):
-        texto = texto[:-2]
-        
-    # Remove zeros à esquerda mantendo pelo menos um '0' se o valor for exatamente zero
-    texto_limpo = texto.lstrip("0")
-    return texto_limpo if texto_limpo else ("0" if texto else "")
-
-
 def validar_pis_existem(
-    pis_no_arquivo: Iterable[object] | pd.Series,
-    pis_validos: Iterable[object] | pd.Series,
+    pis_no_arquivo: list[str] | pd.Series,
+    pis_validos: list[str] | pd.Series,
     nome_amigavel_arquivo: str,
     caminho: str,
 ) -> None:
@@ -78,35 +56,74 @@ def validar_pis_existem(
     Checagem pre-voo: confere que todo PIS/matrícula citado num arquivo
     opcional (banco de horas do Sidney, do Adriano, consignados) existe
     de fato no Cadastro de Colaboradores, ANTES de qualquer calculo
-    pesado comecar.
+    pesado comecar. Um PIS digitado errado nesses arquivos hoje passaria
+    batido (a linha simplesmente nunca casaria com ninguem no merge) -
+    isso avisa a usuaria na hora, apontando exatamente qual PIS e' o
+    problema, em vez de a folha de alguem sair sem o banco de horas dela
+    silenciosamente.
     """
-    encontrados_map: dict[str, str] = {}
-    for p in pis_no_arquivo:
-        orig = str(p).strip()
-        norm = _normalizar_id(p)
-        if norm and orig.lower() != "nan":
-            encontrados_map[norm] = orig
-
-    # Constrói o conjunto de identificadores válidos (PIS e Matrículas)
-    validos_set: set[str] = set()
-    for p in pis_validos:
-        orig = str(p).strip()
-        norm = _normalizar_id(p)
-        if norm and orig.lower() != "nan":
-            validos_set.add(orig)
-            validos_set.add(norm)
-
-    # Identifica quais itens do ficheiro opcional não existem no cadastro
-    desconhecidos = [
-        orig for norm, orig in encontrados_map.items()
-        if norm not in validos_set and orig not in validos_set
-    ]
-    desconhecidos = sorted(list(set(desconhecidos)))
-
+    encontrados = {str(p).strip() for p in pis_no_arquivo if str(p).strip()}
+    validos = {str(p).strip() for p in pis_validos}
+    desconhecidos = sorted(encontrados - validos)
     if desconhecidos:
         raise ArquivoInvalidoError(
             f"O arquivo de {nome_amigavel_arquivo} ('{caminho}') cita o(s) PIS/matrícula "
             f"{', '.join(desconhecidos)}, que não consta(m) no Cadastro de Colaboradores.\n"
-            "Verifique se o PIS/matrícula foi digitado corretamente nesse arquivo, ou se falta "
-            "cadastrar esse colaborador no Cadastro de Colaboradores."
+            "Verifique se o PIS foi digitado corretamente nesse arquivo, ou se falta "
+            "cadastrar esse colaborador."
         )
+
+
+def normalizar_identificador_colaborador(
+    df: pd.DataFrame,
+    coluna_id: str,
+    cadastro: pd.DataFrame,
+    nome_amigavel_arquivo: str,
+    caminho: str,
+) -> pd.DataFrame:
+    """
+    Muitos arquivos auxiliares (consignados, banco de horas) não trazem o
+    PIS — trazem a MATRÍCULA interna da empresa (um número curto, tipo
+    "96" ou "97"), que é um identificador diferente do PIS (o número de
+    11 dígitos usado como chave em todo o resto do pipeline). Isso é
+    normal e legítimo: nem todo sistema de origem expõe o PIS.
+
+    Sem este passo, um valor de matrícula cai na coluna que o detector
+    genérico rotula como "pis" (ele procura qualquer coluna com "pis" OU
+    "matricula" no nome) e nunca bate com o PIS de ninguém no cadastro —
+    o sistema então acusa "PIS não encontrado" para gente que, na
+    verdade, está cadastrada certinha, só que identificada por matrícula
+    naquele arquivo específico.
+
+    Esta função aceita as duas coisas: tenta casar cada valor primeiro
+    como PIS e, se não achar, como matrícula; grava de volta sempre o
+    PIS canônico do cadastro, para o resto do pipeline continuar
+    trabalhando só com PIS. Só levanta erro se um valor não bater com
+    PIS *nem* com matrícula de ninguém.
+    """
+    cadastro_pis = cadastro["pis"].astype(str).str.strip()
+    mapa_matricula_para_pis = dict(zip(cadastro["matricula"].astype(str).str.strip(), cadastro_pis))
+    pis_validos = set(cadastro_pis)
+
+    def resolver(valor):
+        v = str(valor).strip()
+        if v in pis_validos:
+            return v
+        if v in mapa_matricula_para_pis:
+            return mapa_matricula_para_pis[v]
+        return None
+
+    resolvidos = df[coluna_id].map(resolver)
+    nao_resolvidos = sorted(df.loc[resolvidos.isna(), coluna_id].astype(str).str.strip().unique().tolist())
+    if nao_resolvidos:
+        raise ArquivoInvalidoError(
+            f"O arquivo de {nome_amigavel_arquivo} ('{caminho}') cita o(s) identificador(es) "
+            f"{', '.join(nao_resolvidos)}, que não bate(m) nem com o PIS nem com a matrícula "
+            "de nenhum colaborador no Cadastro de Colaboradores.\n"
+            "Verifique se o valor foi digitado corretamente nesse arquivo, ou se falta "
+            "cadastrar esse colaborador."
+        )
+
+    df = df.copy()
+    df[coluna_id] = resolvidos
+    return df
