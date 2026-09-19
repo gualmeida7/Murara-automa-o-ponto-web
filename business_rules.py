@@ -54,23 +54,28 @@ def _minutos_entre(t1: datetime, t2: datetime) -> int:
     return int((t2 - t1).total_seconds() // 60)
 
 
+from datetime import datetime, time, date
+
 def _ajustar_batida_pela_tolerancia(
-    horario_real: datetime, horario_programado: time, dia: date, tolerancia_min: int
+    horario_real: datetime, 
+    horario_programado: time, 
+    dia: date, 
+    tolerancia_min: int
 ) -> datetime:
     """
-    Aplica a tolerancia de ate' 5 min POR MARCACAO (Art. 58 §1º CLT):
-    se a batida real esta dentro da tolerancia do horario programado, ela
-    e' tratada como se tivesse batido exatamente no horario programado
-    (desvio = 0). Se o desvio for maior que a tolerancia, so' o EXCEDENTE
-    (alem da tolerancia) e' considerado - a tolerancia em si nunca vira
-    hora extra nem atraso.
+    Aplica a regra de tolerância de ponto segundo a CLT (Art. 58 § 1º / Súmula 366 TST):
+    - Se a variação for de até `tolerancia_min` (ex: 5 min), considera o horário programado.
+    - Se ultrapassar a tolerância, cobra/paga a TOTALIDADE do tempo real (não apenas o excedente).
     """
     programado_dt = datetime.combine(dia, horario_programado)
     desvio_min = (horario_real - programado_dt).total_seconds() / 60
+
+    # Dentro do limite de tolerância: ajusta para o horário contratual/programado
     if abs(desvio_min) <= tolerancia_min:
         return programado_dt
-    excedente_min = desvio_min - (tolerancia_min if desvio_min > 0 else -tolerancia_min)
-    return programado_dt + timedelta(minutes=excedente_min)
+
+    # Ultrapassou a tolerância: considera a marcação real integral
+    return horario_real
 
 
 def apurar_dia(pis: str, dia: date, batidas: list[datetime], jornada: Jornada) -> dict:
