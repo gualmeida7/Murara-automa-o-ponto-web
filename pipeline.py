@@ -3,7 +3,7 @@ pipeline.py
 ===========
 Orquestra o fechamento de folha ponta a ponta:
 
-    AFD (.txt) + cadastro de colaboradores + consignados (Excel)
+    Ponto (AFD .txt ou Cartao Ponto .pdf) + cadastro de colaboradores + consignados (Excel)
     + banco de horas (Secullum / planilha Adriano) + decisoes do RH
     (vindas do painel de aprovacao)
         -> "Relacao de Valores" (um arquivo por empresa, no layout
@@ -31,10 +31,17 @@ from pathlib import Path
 
 import pandas as pd
 
-from afd_parser import parse_afd, agrupar_batidas_por_dia
+from afd_parser import agrupar_batidas_por_dia
+from leitores_ponto import ler_arquivo_ponto
 from business_rules import Jornada, apurar_periodo, consolidar_mes, gerar_fila_validacao_rh
 from banco_horas import consolidar_banco_horas, ler_banco_horas_secullum, ler_banco_horas_adriano
-from validacao import verificar_colunas, validar_pis_existem, normalizar_identificador_colaborador, ArquivoInvalidoError
+from validacao import (
+    verificar_colunas,
+    validar_pis_existem,
+    normalizar_identificador_colaborador,
+    canonicalizar_pis,
+    ArquivoInvalidoError,
+)
 from leitura_arquivos import ler_arquivo_generico
 
 # ---------------------------------------------------------------------------
@@ -77,7 +84,11 @@ def carregar_cadastro_colaboradores(caminho: str) -> pd.DataFrame:
     """
     df = ler_arquivo_generico(caminho, "Cadastro de Colaboradores")
     verificar_colunas(df, COLUNAS_OBRIGATORIAS_CADASTRO, "Cadastro de Colaboradores", caminho)
-    df["pis"] = df["pis"].astype(str).str.strip()
+    # canonicalizar_pis (e nao so' strip): o AFD do Secullum traz o PIS com
+    # zero de preenchimento a esquerda (12 digitos) - sem reduzir os dois
+    # lados (cadastro E afd_parser) ao mesmo formato de 11 digitos, nenhuma
+    # batida do AFD real bateria com ninguem aqui.
+    df["pis"] = df["pis"].map(canonicalizar_pis)
     return df
 
 
@@ -102,9 +113,42 @@ def montar_jornadas(df_cadastro: pd.DataFrame) -> dict[str, Jornada]:
     return jornadas
 
 
-def carregar_consignados(caminho: str, cadastro: pd.DataFrame | None = None) -> pd.DataFrame:
+def _detectar_coluna_valor_consignado(colunas: list[str]) -> str | None:
     """
-    Extrato de consignados. Espera colunas matricula/pis + valor_desconto.
+    Acha a coluna do valor da parcela mensal do consignado. Não basta
+    procurar "valor" ou "desconto" na primeira coluna que bater: o
+    extrato padrão de averbação de consignados (eSocial/Secullum) traz
+    colunas como "competenciaInicioDesconto" e "competenciaFimDesconto"
+    (datas, não valores) ANTES de "valorParcela" na planilha - "desconto"
+    aparece no nome dessas colunas de data também. Por isso a busca
+    primeiro restringe aos candidatos que não são claramente uma
+    competência/data, prioriza "valor" (que cobre "valorparcela",
+    "valoremprestimo", "valorliberado" - nessa ordem, e "valorparcela" é
+    a parcela mensal, a correta para descontar na folha) e só cai para
+    "desconto" como últimO recurso, para não quebrar extratos simples
+    que usam um nome de coluna como "valor_desconto".
+    """
+    candidatos = [c for c in colunas if "competencia" not in c and "data" not in c]
+    return (
+        next((c for c in candidatos if "valor" in c), None)
+        or next((c for c in candidatos if "desconto" in c), None)
+    )
+
+
+def carregar_consignados(caminho: str | list[str], cadastro: pd.DataFrame | None = None) -> pd.DataFrame:
+    """
+    Extrato de consignados. Espera colunas matricula/pis + valor da
+    parcela mensal (ex.: "valor_desconto", ou "valorParcela" no layout
+    padrão de averbação eSocial/Secullum - ver `_detectar_coluna_valor_consignado`).
+
+    Aceita um único caminho ou uma LISTA de caminhos: cada empresa
+    costuma emitir seu próprio extrato de consignados (CNPJs diferentes),
+    então o fechamento muitas vezes precisa somar mais de um arquivo
+    antes da checagem pré-voo e do cruzamento com a Relação de Valores.
+
+    Um mesmo colaborador pode ter mais de um empréstimo ativo no mês
+    (várias linhas) - o valor de todas é somado por colaborador antes de
+    retornar.
 
     Passe `cadastro` (o DataFrame já carregado de
     `carregar_cadastro_colaboradores`) sempre que possível: muitos
@@ -113,19 +157,25 @@ def carregar_consignados(caminho: str, cadastro: pd.DataFrame | None = None) -> 
     qual dos dois está na coluna de identificação — veja
     `validacao.normalizar_identificador_colaborador` para o porquê.
     """
-    df = ler_arquivo_generico(caminho, "Extrato de Consignados")
-    col_id = next((c for c in df.columns if "pis" in c or "matricula" in c), None)
-    col_valor = next((c for c in df.columns if "valor" in c or "desconto" in c), None)
-    if col_id is None or col_valor is None:
-        raise ArquivoInvalidoError(
-            f"O Extrato de Consignados ('{caminho}') está sem uma coluna de identificação "
-            f"(pis/matrícula) e/ou de valor (valor/desconto).\n"
-            f"Colunas encontradas: {list(df.columns)}."
-        )
-    out = df[[col_id, col_valor]].rename(columns={col_id: "pis", col_valor: "valor_consignado"})
-    out["pis"] = out["pis"].astype(str).str.strip()
-    if cadastro is not None:
-        out = normalizar_identificador_colaborador(out, "pis", cadastro, "Extrato de Consignados", caminho)
+    caminhos = [caminho] if isinstance(caminho, str) else list(caminho)
+    partes = []
+    for caminho_arquivo in caminhos:
+        df = ler_arquivo_generico(caminho_arquivo, "Extrato de Consignados")
+        col_id = next((c for c in df.columns if "pis" in c or "matricula" in c), None)
+        col_valor = _detectar_coluna_valor_consignado(list(df.columns))
+        if col_id is None or col_valor is None:
+            raise ArquivoInvalidoError(
+                f"O Extrato de Consignados ('{caminho_arquivo}') está sem uma coluna de identificação "
+                f"(pis/matrícula) e/ou de valor da parcela (valor/desconto).\n"
+                f"Colunas encontradas: {list(df.columns)}."
+            )
+        parte = df[[col_id, col_valor]].rename(columns={col_id: "pis", col_valor: "valor_consignado"})
+        parte["pis"] = parte["pis"].astype(str).str.strip()
+        if cadastro is not None:
+            parte = normalizar_identificador_colaborador(parte, "pis", cadastro, "Extrato de Consignados", caminho_arquivo)
+        partes.append(parte)
+
+    out = pd.concat(partes, ignore_index=True)
     return out.groupby("pis", as_index=False)["valor_consignado"].sum()
 
 
@@ -163,21 +213,60 @@ def executar_checagens_preflight(
 
 
 def rodada_1_gerar_fila_de_excecoes(
-    caminho_afd: str,
+    caminho_ponto: str,
     df_cadastro: pd.DataFrame,
     data_inicio: date,
     data_fim: date,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Retorna (apuracao_diaria_completa, fila_para_validacao_rh)."""
-    resultado_afd = parse_afd(caminho_afd)
-    if resultado_afd.erros_leitura:
-        print(f"[aviso] {len(resultado_afd.erros_leitura)} linha(s) do AFD nao puderam ser lidas - ver log.")
+    """
+    Retorna (apuracao_diaria_completa, fila_para_validacao_rh).
+    `caminho_ponto` pode ser o AFD (.txt) ou o Cartao Ponto do Secullum
+    (.pdf) - ver leitores_ponto.py.
+    """
+    resultado_ponto = ler_arquivo_ponto(caminho_ponto, df_cadastro)
+    if resultado_ponto.erros_leitura:
+        print(f"[aviso] {len(resultado_ponto.erros_leitura)} aviso(s) na leitura do ponto - ver log.")
 
-    batidas_por_dia = agrupar_batidas_por_dia(resultado_afd.batidas)
+    batidas_por_dia = agrupar_batidas_por_dia(resultado_ponto.batidas)
     jornadas = montar_jornadas(df_cadastro)
     apuracao = apurar_periodo(batidas_por_dia, jornadas, data_inicio, data_fim)
     fila = gerar_fila_validacao_rh(apuracao)
+    fila = _anexar_contexto_secullum(fila, resultado_ponto.espelho_diario)
     return apuracao, fila
+
+
+def _anexar_contexto_secullum(fila: pd.DataFrame, espelho_diario: pd.DataFrame | None) -> pd.DataFrame:
+    """
+    Quando o ponto veio do Cartao Ponto em PDF (`cartao_ponto_pdf.py`), cada
+    dia ja' traz a ocorrencia que o PROPRIO Secullum anotou (ex.: 'ATESTAD',
+    'FALTA') - informacao que o AFD (.txt) simplesmente nao tem. Isso NAO
+    decide nada automaticamente (o RH continua tendo que confirmar cada
+    linha, exatamente como hoje) - so' poupa a pessoa de abrir o PDF de
+    novo pra descobrir que aquele dia sem batida sinalizado como "confirmar
+    se e' falta real ou erro de relogio" ja' tinha um atestado lancado.
+
+    Com AFD a coluna `ocorrencia_secullum` fica vazia (NaN) - nenhum
+    comportamento muda pra quem so' usa o AFD.
+    """
+    if fila.empty:
+        return fila.assign(ocorrencia_secullum=pd.Series(dtype=str))
+    if espelho_diario is None or espelho_diario.empty or "ocorrencia" not in espelho_diario.columns:
+        return fila.assign(ocorrencia_secullum=pd.NA)
+
+    notas = (
+        espelho_diario[["pis", "data", "ocorrencia"]]
+        .dropna(subset=["ocorrencia"])
+        .rename(columns={"ocorrencia": "ocorrencia_secullum"})
+    )
+    notas["data"] = pd.to_datetime(notas["data"])
+    fila = fila.merge(notas, on=["pis", "data"], how="left")
+
+    tem_nota = fila["ocorrencia_secullum"].notna()
+    fila.loc[tem_nota, "motivo_validacao"] = (
+        fila.loc[tem_nota, "motivo_validacao"]
+        + " — Secullum já registrou: '" + fila.loc[tem_nota, "ocorrencia_secullum"] + "'"
+    )
+    return fila
 
 
 def exportar_fila_validacao_rh(fila: pd.DataFrame, df_cadastro: pd.DataFrame, caminho_csv: str) -> pd.DataFrame:
@@ -196,8 +285,13 @@ def exportar_fila_validacao_rh(fila: pd.DataFrame, df_cadastro: pd.DataFrame, ca
     Retorna o DataFrame final tambem, para quem quiser inspecionar sem
     reabrir o CSV.
     """
+    colunas_saida = ["pis", "nome_colaborador", "razao_social", "data", "status", "motivo_validacao"]
+    if "ocorrencia_secullum" in fila.columns:
+        colunas_saida.append("ocorrencia_secullum")
+
     if fila.empty:
         fila_final = fila.assign(nome_colaborador=pd.Series(dtype=str), razao_social=pd.Series(dtype=str))
+        fila_final = fila_final.reindex(columns=colunas_saida)
         fila_final.to_csv(caminho_csv, index=False, encoding="utf-8-sig")
         return fila_final
 
@@ -208,7 +302,7 @@ def exportar_fila_validacao_rh(fila: pd.DataFrame, df_cadastro: pd.DataFrame, ca
     fila_ordenada = fila_com_nome.sort_values(["nome_colaborador", "data"]).reset_index(drop=True)
     fila_ordenada["data"] = fila_ordenada["data"].dt.strftime("%d/%m/%Y")
 
-    fila_final = fila_ordenada[["pis", "nome_colaborador", "razao_social", "data", "status", "motivo_validacao"]]
+    fila_final = fila_ordenada[colunas_saida]
     fila_final.to_csv(caminho_csv, index=False, encoding="utf-8-sig")
     return fila_final
 

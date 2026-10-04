@@ -11,6 +11,8 @@ qual arquivo e qual coluna esta faltando.
 
 from __future__ import annotations
 
+import re
+
 import pandas as pd
 
 
@@ -21,6 +23,35 @@ class ArquivoInvalidoError(ValueError):
     qualquer codigo que ja trata ValueError (como a interface grafica em
     app_gui.py) continua funcionando sem precisar de nenhum ajuste.
     """
+
+
+TAMANHO_PIS = 11  # PIS/NIS/PASEP tem 11 digitos (a formatacao com pontos/traco e so' visual)
+
+
+def canonicalizar_pis(valor) -> str:
+    """
+    Reduz qualquer formatacao de PIS (com pontos/traco, ou com zeros de
+    preenchimento) a uma string de 11 digitos comparavel.
+
+    Por que isso existe: o campo PIS do AFD (Portaria 671/2021) tem 12
+    caracteres de largura fixa, preenchido com zero a esquerda -
+    "016151387504" la' e' o mesmo PIS "16151387504" (11 digitos) do
+    Cadastro de Colaboradores ou do Espelho de Ponto. Sem essa normalizacao,
+    o AFD de producao nunca bate com ninguem no cadastro - toda a apuracao
+    do ponto ficaria vazia silenciosamente (nenhum erro visivel, so'
+    zero batida encontrada pra todo mundo).
+
+    A conta e' "tira os zeros a esquerda, depois recoloca ate' completar
+    11 digitos": isso remove exatamente o preenchimento de largura do AFD
+    sem arriscar apagar um zero que faca parte de verdade do PIS (ex.: um
+    PIS real "00123456789" sobrevive intacto, porque volta a ter 11
+    digitos no final). Caracteres nao numericos (pontos, traco, espaco)
+    sao descartados antes de mais nada, pra aceitar tambem PIS digitado
+    com a mascara "123.45678.90-1".
+    """
+    digitos = re.sub(r"\D", "", str(valor))
+    digitos = digitos.lstrip("0")
+    return digitos.rjust(TAMANHO_PIS, "0")
 
 
 def verificar_colunas(

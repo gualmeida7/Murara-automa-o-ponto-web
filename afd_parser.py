@@ -34,6 +34,8 @@ from pathlib import Path
 
 import pandas as pd
 
+from validacao import canonicalizar_pis
+
 # ---------------------------------------------------------------------------
 # CONFIGURACAO DE LAYOUT - AJUSTE AQUI SE O SEU AFD DIVERGIR
 # ---------------------------------------------------------------------------
@@ -66,7 +68,7 @@ def _parse_linha(linha: str, numero_linha: int) -> dict | None:
     if tipo != TIPO_MARCACAO_PONTO:
         return None  # cabecalho, trailer, ajuste manual, etc. - ignorado aqui
 
-    pis = linha[slice(*LAYOUT_TIPO3["pis"])].strip()
+    pis_bruto = linha[slice(*LAYOUT_TIPO3["pis"])].strip()
     data_hora_str = linha[slice(*LAYOUT_TIPO3["data_hora"])].strip()
 
     try:
@@ -74,8 +76,14 @@ def _parse_linha(linha: str, numero_linha: int) -> dict | None:
     except ValueError:
         return {"__erro__": f"linha {numero_linha}: data/hora invalida ('{data_hora_str}')"}
 
-    if not pis:
+    if not pis_bruto:
         return {"__erro__": f"linha {numero_linha}: PIS vazio"}
+
+    # O campo PIS do AFD tem 12 caracteres de largura fixa (preenchido com
+    # zero a esquerda); o PIS "de verdade" tem 11 digitos - canonicalizar
+    # aqui e' o que permite bater com o PIS do Cadastro de Colaboradores
+    # (ver validacao.canonicalizar_pis para o porque da conta).
+    pis = canonicalizar_pis(pis_bruto)
 
     return {"pis": pis, "data_hora": data_hora, "tipo_registro": tipo}
 

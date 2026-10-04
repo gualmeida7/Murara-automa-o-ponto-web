@@ -37,6 +37,7 @@ from pipeline import (
 )
 from banco_horas import consolidar_banco_horas, ler_banco_horas_secullum, ler_banco_horas_adriano
 from leitura_arquivos import ler_arquivo_generico
+from leitores_ponto import EXTENSOES_ACEITAS as EXTENSOES_PONTO
 from validacao import ArquivoInvalidoError
 
 # ---------------------------------------------------------------------------
@@ -98,7 +99,7 @@ def classificar_arquivo(caminho: str) -> str:
     do que o carregador real vai aceitar.
     """
     sufixo = Path(caminho).suffix.lower()
-    if sufixo in (".txt", ".afd"):
+    if sufixo in EXTENSOES_PONTO:
         return "afd"
     try:
         df = ler_arquivo_generico(caminho, "arquivo enviado")
@@ -122,12 +123,29 @@ def classificar_arquivo(caminho: str) -> str:
 
 RÓTULO_AMIGÁVEL = {
     "cadastro": "Cadastro de Colaboradores",
-    "afd": "Arquivo AFD (Ponto)",
+    "afd": "Ponto (AFD .txt ou Cartão Ponto .pdf)",
     "consignados": "Extrato de Consignados",
     "banco_secullum": "Banco de Horas — Secullum",
     "banco_adriano": "Banco de Horas — Planilha do Adriano",
     "desconhecido": "Não identificado (escolha manualmente)",
 }
+
+
+PREFIXOS_OCORRENCIA_JUSTIFICAM_FALTA = ("ATESTAD",)  # atestado medico - sempre falta justificada
+
+
+def _sugerir_classificacao(ocorrencia_secullum) -> str:
+    """
+    Pré-seleciona "Falta justificada" quando o PRÓPRIO Secullum já
+    registrou um atestado médico para aquele dia (ver
+    `pipeline._anexar_contexto_secullum` - só existe quando o ponto veio
+    do Cartão Ponto em PDF). A operadora continua vendo e podendo mudar a
+    decisão no dropdown normalmente - isto só poupa o clique mais óbvio,
+    nunca fecha nada sem passar pela tela de aprovação.
+    """
+    if isinstance(ocorrencia_secullum, str) and ocorrencia_secullum.upper().startswith(PREFIXOS_OCORRENCIA_JUSTIFICAM_FALTA):
+        return "Falta justificada"
+    return ""
 
 
 def preparar_fila_para_tabela(fila: pd.DataFrame, cadastro: pd.DataFrame) -> pd.DataFrame:
@@ -147,7 +165,10 @@ def preparar_fila_para_tabela(fila: pd.DataFrame, cadastro: pd.DataFrame) -> pd.
     fila_ordenada = fila_com_nome.sort_values(["nome_colaborador", "data"]).reset_index(drop=True)
     fila_ordenada["data_exibicao"] = fila_ordenada["data"].dt.strftime("%d/%m/%Y")
     fila_ordenada["situacao"] = fila_ordenada["status"].map(STATUS_LEGIVEL).fillna(fila_ordenada["status"])
-    fila_ordenada["classificacao"] = ""
+    fila_ordenada["classificacao"] = (
+        fila_ordenada["ocorrencia_secullum"].map(_sugerir_classificacao)
+        if "ocorrencia_secullum" in fila_ordenada.columns else ""
+    )
     fila_ordenada["observacao"] = ""
     return fila_ordenada
 
@@ -164,14 +185,14 @@ st.caption("Maçaneiro e Gonzaga LTDA · Cianorte Tubos LTDA — tudo numa tela 
 st.header("1. Enviar os arquivos")
 st.write(
     "Arraste todos os arquivos do fechamento para a área abaixo de uma vez só — "
-    "Cadastro de Colaboradores, Arquivo AFD (ponto), Extrato de Consignados e, se houver, "
+    "Cadastro de Colaboradores, Ponto (AFD .txt ou Cartão Ponto .pdf), Extrato de Consignados e, se houver, "
     "o Banco de Horas do Secullum e/ou a planilha semanal do Adriano. "
     "O sistema identifica sozinho o que é cada arquivo."
 )
 
 arquivos_subidos = st.file_uploader(
     "Arraste os arquivos aqui ou clique para selecionar",
-    type=["txt", "xlsx", "xls", "csv"],
+    type=[ext.lstrip(".") for ext in EXTENSOES_PONTO] + ["xlsx", "xls", "csv"],
     accept_multiple_files=True,
     key="uploader_geral",
 )
@@ -185,7 +206,11 @@ if arquivos_subidos:
 
     st.write("**Confira o que o sistema identificou** (ajuste no dropdown se algo saiu errado):")
     opcoes_tipo = list(RÓTULO_AMIGÁVEL.keys())
-    tipos_confirmados = {}
+    # Cada tipo guarda uma LISTA de caminhos, não um único - várias empresas
+    # costumam emitir extratos de consignados separados (um por CNPJ), por
+    # exemplo, e nada deve ser descartado silenciosamente se a pessoa soltar
+    # dois arquivos classificados com o mesmo tipo.
+    tipos_confirmados: dict[str, list[str]] = {}
     for i, item in enumerate(linhas_classificacao):
         col1, col2 = st.columns([2, 3])
         with col1:
@@ -199,7 +224,13 @@ if arquivos_subidos:
                 key=f"tipo_{item['arquivo']}_{i}",
                 label_visibility="collapsed",
             )
-        tipos_confirmados[escolha] = item["caminho"]
+        tipos_confirmados.setdefault(escolha, []).append(item["caminho"])
+
+    # Tipos dos quais só faz sentido existir UM arquivo por fechamento -
+    # mais de um classificado assim é quase certamente um erro de
+    # classificação (ex.: dois cadastros enviados por engano), e seguir
+    # silenciosamente usando só o primeiro escondería o problema.
+    TIPOS_ARQUIVO_UNICO = ("cadastro", "afd", "banco_secullum", "banco_adriano")
 
     pis_adriano = ""
     if "banco_adriano" in tipos_confirmados:
@@ -210,11 +241,19 @@ if arquivos_subidos:
 
     if st.button("Confirmar arquivos e continuar", type="primary"):
         faltando = [t for t in ("cadastro", "afd", "consignados") if t not in tipos_confirmados]
+        duplicados = [t for t in TIPOS_ARQUIVO_UNICO if len(tipos_confirmados.get(t, [])) > 1]
         if faltando:
             st.error(
                 "Ainda faltam arquivos obrigatórios: "
                 + ", ".join(RÓTULO_AMIGÁVEL[t] for t in faltando)
                 + ". Envie-os e classifique corretamente antes de continuar."
+            )
+        elif duplicados:
+            st.error(
+                "Só é esperado um arquivo de cada um destes tipos, mas mais de um foi "
+                "classificado assim: " + ", ".join(RÓTULO_AMIGÁVEL[t] for t in duplicados) + ". "
+                "Confira a classificação de cada arquivo acima (se houver mais de um extrato de "
+                "Consignados, isso é esperado — um por empresa/CNPJ, por exemplo — e não gera este erro)."
             )
         elif "banco_adriano" in tipos_confirmados and not pis_adriano.strip():
             st.error("Você enviou a planilha do Adriano, mas não informou o PIS/matrícula dele.")
@@ -243,22 +282,22 @@ if st.session_state.get("arquivos_confirmados"):
     if st.button("🔎 Validar dados (checagem pré-voo)", type="primary"):
         arquivos = st.session_state.arquivos_confirmados
         try:
-            cadastro = carregar_cadastro_colaboradores(arquivos["cadastro"])
+            cadastro = carregar_cadastro_colaboradores(arquivos["cadastro"][0])
             consignados = carregar_consignados(arquivos["consignados"], cadastro=cadastro)
             banco_secullum = (
-                ler_banco_horas_secullum(arquivos["banco_secullum"], cadastro=cadastro)
+                ler_banco_horas_secullum(arquivos["banco_secullum"][0], cadastro=cadastro)
                 if "banco_secullum" in arquivos else None
             )
             banco_adriano = (
-                ler_banco_horas_adriano(arquivos["banco_adriano"], st.session_state.pis_adriano, cadastro=cadastro)
+                ler_banco_horas_adriano(arquivos["banco_adriano"][0], st.session_state.pis_adriano, cadastro=cadastro)
                 if "banco_adriano" in arquivos
                 else None
             )
             executar_checagens_preflight(
                 cadastro, consignados, banco_secullum, banco_adriano,
-                caminho_consignados=arquivos["consignados"],
-                caminho_banco_secullum=arquivos.get("banco_secullum", ""),
-                caminho_banco_adriano=arquivos.get("banco_adriano", ""),
+                caminho_consignados=", ".join(arquivos["consignados"]),
+                caminho_banco_secullum=arquivos.get("banco_secullum", [""])[0],
+                caminho_banco_adriano=arquivos.get("banco_adriano", [""])[0],
             )
         except ArquivoInvalidoError as e:
             st.session_state.preflight_ok = False
@@ -281,7 +320,7 @@ if st.session_state.get("preflight_ok"):
         with st.spinner("Lendo o AFD e apurando ponto a ponto — pode levar alguns segundos..."):
             arquivos = st.session_state.arquivos_confirmados
             apuracao, fila = rodada_1_gerar_fila_de_excecoes(
-                arquivos["afd"], st.session_state.cadastro_df, data_inicio, data_fim
+                arquivos["afd"][0], st.session_state.cadastro_df, data_inicio, data_fim
             )
             st.session_state.apuracao_diaria = apuracao
             st.session_state.fila_tabela = preparar_fila_para_tabela(fila, st.session_state.cadastro_df)

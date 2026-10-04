@@ -150,7 +150,13 @@ def apurar_dia(pis: str, dia: date, batidas: list[datetime], jornada: Jornada) -
         trabalhado_min = (
             _minutos_entre(entrada_aj, saida_almoco_aj) + _minutos_entre(retorno_almoco_aj, saida_aj)
         )
-        if intervalo_min < 60:
+        # A mesma tolerancia por marcacao da CLT (Art. 58 §1º) usada acima
+        # pra "encostar" entrada/saida no horario programado tambem vale
+        # aqui: um intervalo de 56-59 min e' so' a SAIDA_ALMOCO ou o
+        # RETORNO_ALMOCO batendo 1-4 min fora do horario, o que a empresa
+        # ja' tolera por marcacao - nao e' um intervalo curto de verdade.
+        # So' sinaliza pra validacao humana o que sobra fora dessa folga.
+        if intervalo_min < 60 - tol_batida:
             base["status"] = "INTERVALO_CURTO"
             base["precisa_validacao_rh"] = True
             base["motivo_validacao"] = f"Intervalo de almoco de apenas {intervalo_min} min"

@@ -40,7 +40,6 @@ from tkinter import ttk, filedialog, messagebox
 
 import pandas as pd
 
-from afd_parser import parse_afd
 from pipeline import (
     carregar_cadastro_colaboradores,
     carregar_consignados,
@@ -85,6 +84,11 @@ class AplicativoFolha(tk.Tk):
             "banco_secullum": tk.StringVar(),
             "banco_adriano": tk.StringVar(),
         }
+        # Consignados aceita mais de um arquivo (uma empresa com mais de um
+        # CNPJ normalmente recebe um extrato de averbação separado por
+        # CNPJ) - a StringVar acima so' mostra um resumo pra usuaria;
+        # quem o pipeline realmente le e' esta lista.
+        self.caminhos_consignados: list[str] = []
         self.pis_adriano = tk.StringVar()
 
         inicio_padrao, fim_padrao = periodo_padrao()
@@ -108,10 +112,9 @@ class AplicativoFolha(tk.Tk):
 
         self._linha_arquivo(secao_obrig, "Cadastro de Colaboradores", "cadastro",
                              "Selecionar Cadastro de Colaboradores")
-        self._linha_arquivo(secao_obrig, "Arquivo AFD (Ponto)", "afd",
+        self._linha_arquivo(secao_obrig, "Ponto (AFD .txt ou Cartão Ponto .pdf)", "afd",
                              "Selecionar Arquivo AFD (Ponto)")
-        self._linha_arquivo(secao_obrig, "Extrato de Consignados", "consignados",
-                             "Selecionar Consignados")
+        self._linha_consignados(secao_obrig)
 
         secao_opc = tk.LabelFrame(self, text="Banco de horas (opcional)", font=("Segoe UI", 10, "bold"), padx=10, pady=10)
         secao_opc.pack(fill="x", padx=16, pady=(4, 8))
@@ -165,13 +168,42 @@ class AplicativoFolha(tk.Tk):
         tk.Entry(linha, textvariable=self.caminhos[chave], width=32, state="readonly").pack(side="left", padx=(0, 8))
         tk.Button(linha, text=texto_botao, command=lambda: self._escolher_arquivo(chave)).pack(side="left")
 
+    def _linha_consignados(self, container):
+        """
+        Igual a `_linha_arquivo`, mas permite selecionar MAIS DE UM
+        arquivo de uma vez (`askopenfilenames`, no plural) - uma empresa
+        com mais de um CNPJ normalmente recebe um extrato de averbação de
+        consignados separado por CNPJ, e nenhum deles deve ser descartado
+        silenciosamente por só haver espaço para um caminho na tela.
+        """
+        linha = tk.Frame(container)
+        linha.pack(fill="x", pady=4)
+        tk.Label(linha, text="Extrato(s) de Consignados:", width=28, anchor="w").pack(side="left")
+        tk.Entry(linha, textvariable=self.caminhos["consignados"], width=32, state="readonly").pack(
+            side="left", padx=(0, 8)
+        )
+        tk.Button(linha, text="Selecionar Consignados", command=self._escolher_consignados).pack(side="left")
+
+    def _escolher_consignados(self):
+        caminhos = filedialog.askopenfilenames(
+            title="Selecionar um ou mais extratos de Consignados (um por empresa/CNPJ, se houver)",
+            filetypes=[("Planilhas e texto", "*.xlsx *.xls *.csv"), ("Todos os arquivos", "*.*")],
+        )
+        if caminhos:
+            self.caminhos_consignados = list(caminhos)
+            resumo = (
+                Path(caminhos[0]).name if len(caminhos) == 1
+                else f"{len(caminhos)} arquivos selecionados"
+            )
+            self.caminhos["consignados"].set(resumo)
+
     # ------------------------------------------------------------------
     # Ações
     # ------------------------------------------------------------------
     def _escolher_arquivo(self, chave):
         caminho = filedialog.askopenfilename(
             title="Selecionar arquivo",
-            filetypes=[("Planilhas e texto", "*.xlsx *.xls *.csv *.txt"), ("Todos os arquivos", "*.*")],
+            filetypes=[("Planilhas, texto e PDF", "*.xlsx *.xls *.csv *.txt *.pdf"), ("Todos os arquivos", "*.*")],
         )
         if caminho:
             self.caminhos[chave].set(caminho)
@@ -210,8 +242,8 @@ class AplicativoFolha(tk.Tk):
             return "Selecione o arquivo de Cadastro de Colaboradores antes de continuar."
         if not self.caminhos["afd"].get():
             return "Selecione o Arquivo AFD (Ponto) antes de continuar."
-        if not self.caminhos["consignados"].get():
-            return "Selecione o Extrato de Consignados antes de continuar."
+        if not self.caminhos_consignados:
+            return "Selecione ao menos um Extrato de Consignados antes de continuar."
         if self.caminhos["banco_adriano"].get() and not self.pis_adriano.get().strip():
             return "Você selecionou a planilha do Adriano, mas não informou o PIS/matrícula dele."
         try:
@@ -239,7 +271,7 @@ class AplicativoFolha(tk.Tk):
             cadastro = carregar_cadastro_colaboradores(self.caminhos["cadastro"].get())
 
             self._status(1)
-            consignados = carregar_consignados(self.caminhos["consignados"].get(), cadastro=cadastro)
+            consignados = carregar_consignados(self.caminhos_consignados, cadastro=cadastro)
 
             banco_secullum = None
             if self.caminhos["banco_secullum"].get():
@@ -258,7 +290,7 @@ class AplicativoFolha(tk.Tk):
             # esperar o AFD inteiro ser processado.
             executar_checagens_preflight(
                 cadastro, consignados, banco_secullum, banco_adriano,
-                caminho_consignados=self.caminhos["consignados"].get(),
+                caminho_consignados=", ".join(self.caminhos_consignados),
                 caminho_banco_secullum=self.caminhos["banco_secullum"].get(),
                 caminho_banco_adriano=self.caminhos["banco_adriano"].get(),
             )
