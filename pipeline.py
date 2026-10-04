@@ -33,6 +33,7 @@ import pandas as pd
 
 from afd_parser import agrupar_batidas_por_dia
 from leitores_ponto import ler_arquivo_ponto
+from pdf_espelho_ponto import mapear_para_pis, parse_espelho_pdf
 from business_rules import Jornada, apurar_periodo, consolidar_mes, gerar_fila_validacao_rh
 from banco_horas import consolidar_banco_horas, ler_banco_horas_secullum, ler_banco_horas_adriano
 from validacao import (
@@ -217,11 +218,16 @@ def rodada_1_gerar_fila_de_excecoes(
     df_cadastro: pd.DataFrame,
     data_inicio: date,
     data_fim: date,
+    caminho_espelho: str | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """
     Retorna (apuracao_diaria_completa, fila_para_validacao_rh).
     `caminho_ponto` pode ser o AFD (.txt) ou o Cartao Ponto do Secullum
     (.pdf) - ver leitores_ponto.py.
+
+    Com `caminho_espelho` (Espelho de Ponto em PDF), cada dia sem batida na
+    fila e' cruzado com as batidas brutas do relogio - ver
+    `_anexar_cruzamento_espelho`.
     """
     resultado_ponto = ler_arquivo_ponto(caminho_ponto, df_cadastro)
     if resultado_ponto.erros_leitura:
@@ -232,7 +238,52 @@ def rodada_1_gerar_fila_de_excecoes(
     apuracao = apurar_periodo(batidas_por_dia, jornadas, data_inicio, data_fim)
     fila = gerar_fila_validacao_rh(apuracao)
     fila = _anexar_contexto_secullum(fila, resultado_ponto.espelho_diario)
+    if caminho_espelho:
+        resultado_espelho = parse_espelho_pdf(caminho_espelho)
+        batidas_brutas = mapear_para_pis(resultado_espelho, df_cadastro)
+        if resultado_espelho.avisos:
+            print(f"[aviso] {len(resultado_espelho.avisos)} aviso(s) na leitura do Espelho de Ponto - ver log.")
+        fila = _anexar_cruzamento_espelho(fila, batidas_brutas)
     return apuracao, fila
+
+
+CRUZAMENTO_ERRO_RELOGIO = "Provável erro de relógio — verificar"
+CRUZAMENTO_FALTA_REAL = "Provável falta real — confirmar"
+
+
+def _anexar_cruzamento_espelho(fila: pd.DataFrame, dias_espelho: pd.DataFrame) -> pd.DataFrame:
+    """
+    Para cada dia SEM batida na fila (status FALTA_OU_AUSENCIA), confere se o
+    Espelho de Ponto mostra alguma batida bruta do relogio naquele dia:
+      - mostra   -> a batida existiu no equipamento mas nao chegou ao Cartao
+                    Ponto: "Provavel erro de relogio - verificar";
+      - nao mostra -> "Provavel falta real - confirmar".
+    Adiciona a coluna `cruzamento_espelho` (NaN nas demais linhas) e acrescenta
+    o resultado ao `motivo_validacao`. Nao decide nada: a operadora continua
+    classificando cada linha na tela de aprovacao.
+    """
+    if fila.empty:
+        return fila.assign(cruzamento_espelho=pd.Series(dtype=str))
+
+    com_batida = {
+        (pis, pd.Timestamp(data))
+        for pis, data, brutas in zip(dias_espelho["pis"], dias_espelho["data"], dias_espelho["batidas_brutas"])
+        if len(brutas) > 0
+    }
+
+    def _classificar(linha):
+        if linha["status"] != "FALTA_OU_AUSENCIA":
+            return pd.NA
+        existe = (linha["pis"], pd.Timestamp(linha["data"])) in com_batida
+        return CRUZAMENTO_ERRO_RELOGIO if existe else CRUZAMENTO_FALTA_REAL
+
+    fila = fila.copy()
+    fila["cruzamento_espelho"] = fila.apply(_classificar, axis=1)
+    tem = fila["cruzamento_espelho"].notna()
+    fila.loc[tem, "motivo_validacao"] = (
+        fila.loc[tem, "motivo_validacao"] + " — Espelho de Ponto: " + fila.loc[tem, "cruzamento_espelho"]
+    )
+    return fila
 
 
 def _anexar_contexto_secullum(fila: pd.DataFrame, espelho_diario: pd.DataFrame | None) -> pd.DataFrame:

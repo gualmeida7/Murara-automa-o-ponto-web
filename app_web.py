@@ -36,6 +36,7 @@ from pipeline import (
     COLUNAS_OBRIGATORIAS_CADASTRO,
 )
 from banco_horas import consolidar_banco_horas, ler_banco_horas_secullum, ler_banco_horas_adriano
+from cartao_ponto_pdf import _sem_acento
 from leitura_arquivos import ler_arquivo_generico
 from leitores_ponto import EXTENSOES_ACEITAS as EXTENSOES_PONTO
 from validacao import ArquivoInvalidoError
@@ -54,11 +55,20 @@ STATUS_LEGIVEL = {
     "BATIDA_INCOMPLETA": "Batida incompleta",
     "INTERVALO_CURTO": "Intervalo curto",
 }
-OPCOES_CLASSIFICACAO = ["", "Falta injustificada", "Falta justificada", "Erro de relógio — abonar"]
+OPCOES_CLASSIFICACAO = [
+    "",
+    "Falta injustificada",
+    "Falta justificada",
+    "Erro de relógio — abonar",
+    "Atestado médico",
+]
 LABEL_PARA_CODIGO = {
     "Falta injustificada": "FALTA_INJUSTIFICADA",
     "Falta justificada": "FALTA_JUSTIFICADA",
     "Erro de relógio — abonar": "ERRO_RELOGIO_ABONAR",
+    # Atestado médico = falta justificada para o cálculo (business_rules.py não muda):
+    # não gera desconto de VA/DSR, mas continua tirando o COPR, como toda falta justificada.
+    "Atestado médico": "FALTA_JUSTIFICADA",
 }
 
 # ---------------------------------------------------------------------------
@@ -90,17 +100,46 @@ def salvar_upload_em_disco(arquivo_subido) -> str:
 # ---------------------------------------------------------------------------
 # Classificação automática dos arquivos soltos na área única de upload
 # ---------------------------------------------------------------------------
+def _classificar_pdf_ponto(caminho: str) -> str:
+    """
+    Lê o cabeçalho da 1ª página: "ESPELHO DE PONTO ELETRÔNICO" ou "CARTÃO
+    PONTO". Se o texto não puder ser lido, cai para o nome do arquivo.
+    """
+    cabecalho = ""
+    try:
+        import pdfplumber
+
+        with pdfplumber.open(caminho) as pdf:
+            cabecalho = (pdf.pages[0].extract_text() or "")[:500]
+    except Exception:
+        pass
+    cabecalho = _sem_acento(cabecalho).upper()
+    if "ESPELHO DE PONTO" in cabecalho:
+        return "espelho_ponto"
+    if "CARTAO PONTO" in cabecalho:
+        return "cartao_ponto"
+
+    nome = _sem_acento(Path(caminho).name).lower()
+    if "espelho" in nome:
+        return "espelho_ponto"
+    if "cartao" in nome:
+        return "cartao_ponto"
+    return "desconhecido"
+
+
 def classificar_arquivo(caminho: str) -> str:
     """
-    Devolve um dos rótulos: 'cadastro', 'afd', 'consignados',
-    'banco_secullum', 'banco_adriano' ou 'desconhecido'. Usa a mesma
-    lógica de detecção de coluna já usada dentro dos carregadores
-    (validacao.py / banco_horas.py), então a classificação nunca diverge
-    do que o carregador real vai aceitar.
+    Devolve um dos rótulos: 'cartao_ponto', 'espelho_ponto', 'afd',
+    'cadastro', 'consignados', 'banco_secullum', 'banco_adriano' ou
+    'desconhecido'. Para planilhas usa a mesma lógica de detecção de coluna
+    já usada dentro dos carregadores (validacao.py / banco_horas.py), então
+    a classificação nunca diverge do que o carregador real vai aceitar.
     """
     sufixo = Path(caminho).suffix.lower()
-    if sufixo in EXTENSOES_PONTO:
+    if sufixo in (".txt", ".afd"):
         return "afd"
+    if sufixo == ".pdf":
+        return _classificar_pdf_ponto(caminho)
     try:
         df = ler_arquivo_generico(caminho, "arquivo enviado")
     except ArquivoInvalidoError:
@@ -122,8 +161,10 @@ def classificar_arquivo(caminho: str) -> str:
 
 
 RÓTULO_AMIGÁVEL = {
+    "cartao_ponto": "Cartão Ponto (PDF Secullum)",
+    "espelho_ponto": "Espelho de Ponto (PDF Secullum)",
+    "afd": "Arquivo AFD (.txt — exportação direta do Secullum)",
     "cadastro": "Cadastro de Colaboradores",
-    "afd": "Ponto (AFD .txt ou Cartão Ponto .pdf)",
     "consignados": "Extrato de Consignados",
     "banco_secullum": "Banco de Horas — Secullum",
     "banco_adriano": "Banco de Horas — Planilha do Adriano",
@@ -165,6 +206,9 @@ def preparar_fila_para_tabela(fila: pd.DataFrame, cadastro: pd.DataFrame) -> pd.
     fila_ordenada = fila_com_nome.sort_values(["nome_colaborador", "data"]).reset_index(drop=True)
     fila_ordenada["data_exibicao"] = fila_ordenada["data"].dt.strftime("%d/%m/%Y")
     fila_ordenada["situacao"] = fila_ordenada["status"].map(STATUS_LEGIVEL).fillna(fila_ordenada["status"])
+    if "cruzamento_espelho" in fila_ordenada.columns:
+        # Com o Espelho de Ponto, "Falta ou ausência" vira "Provável erro de relógio" ou "Provável falta real".
+        fila_ordenada["situacao"] = fila_ordenada["cruzamento_espelho"].fillna(fila_ordenada["situacao"])
     fila_ordenada["classificacao"] = (
         fila_ordenada["ocorrencia_secullum"].map(_sugerir_classificacao)
         if "ocorrencia_secullum" in fila_ordenada.columns else ""
@@ -185,7 +229,7 @@ st.caption("Maçaneiro e Gonzaga LTDA · Cianorte Tubos LTDA — tudo numa tela 
 st.header("1. Enviar os arquivos")
 st.write(
     "Arraste todos os arquivos do fechamento para a área abaixo de uma vez só — "
-    "Cadastro de Colaboradores, Ponto (AFD .txt ou Cartão Ponto .pdf), Extrato de Consignados e, se houver, "
+    "Cadastro de Colaboradores, Cartão Ponto e Espelho de Ponto (PDF) — ou o AFD .txt —, Extrato de Consignados e, se houver, "
     "o Banco de Horas do Secullum e/ou a planilha semanal do Adriano. "
     "O sistema identifica sozinho o que é cada arquivo."
 )
@@ -230,7 +274,9 @@ if arquivos_subidos:
     # mais de um classificado assim é quase certamente um erro de
     # classificação (ex.: dois cadastros enviados por engano), e seguir
     # silenciosamente usando só o primeiro escondería o problema.
-    TIPOS_ARQUIVO_UNICO = ("cadastro", "afd", "banco_secullum", "banco_adriano")
+    TIPOS_ARQUIVO_UNICO = (
+        "cadastro", "cartao_ponto", "espelho_ponto", "afd", "banco_secullum", "banco_adriano",
+    )
 
     pis_adriano = ""
     if "banco_adriano" in tipos_confirmados:
@@ -240,12 +286,23 @@ if arquivos_subidos:
         )
 
     if st.button("Confirmar arquivos e continuar", type="primary"):
-        faltando = [t for t in ("cadastro", "afd", "consignados") if t not in tipos_confirmados]
+        # Slot "ponto": AFD sozinho, Cartão Ponto sozinho, ou Cartão + Espelho (conferência
+        # cruzada completa). O Espelho sem Cartão nem AFD não tem o que cruzar.
+        tem_ponto = "afd" in tipos_confirmados or "cartao_ponto" in tipos_confirmados
+        faltando = [t for t in ("cadastro", "consignados") if t not in tipos_confirmados]
+        if not tem_ponto:
+            faltando.insert(1, "cartao_ponto")
+        if "espelho_ponto" in tipos_confirmados and "cartao_ponto" not in tipos_confirmados:
+            st.warning(
+                "O Espelho de Ponto foi enviado sem o Cartão Ponto correspondente. "
+                "A conferência cruzada ficará limitada."
+            )
         duplicados = [t for t in TIPOS_ARQUIVO_UNICO if len(tipos_confirmados.get(t, [])) > 1]
         if faltando:
             st.error(
                 "Ainda faltam arquivos obrigatórios: "
                 + ", ".join(RÓTULO_AMIGÁVEL[t] for t in faltando)
+                + (" (ou o Arquivo AFD)" if "cartao_ponto" in faltando else "")
                 + ". Envie-os e classifique corretamente antes de continuar."
             )
         elif duplicados:
@@ -317,10 +374,13 @@ if st.session_state.get("arquivos_confirmados"):
 if st.session_state.get("preflight_ok"):
     st.header("3. Processar o ponto e calcular o fechamento")
     if st.button("⚙️ Processar Ponto e Calcular Fechamento", type="primary"):
-        with st.spinner("Lendo o AFD e apurando ponto a ponto — pode levar alguns segundos..."):
+        with st.spinner("Lendo o ponto e apurando dia a dia — pode levar alguns segundos..."):
             arquivos = st.session_state.arquivos_confirmados
+            # AFD (.txt) tem prioridade quando enviado; senão usa o Cartão Ponto (PDF).
+            caminho_ponto = (arquivos.get("afd") or arquivos["cartao_ponto"])[0]
             apuracao, fila = rodada_1_gerar_fila_de_excecoes(
-                arquivos["afd"][0], st.session_state.cadastro_df, data_inicio, data_fim
+                caminho_ponto, st.session_state.cadastro_df, data_inicio, data_fim,
+                caminho_espelho=arquivos.get("espelho_ponto", [None])[0],
             )
             st.session_state.apuracao_diaria = apuracao
             st.session_state.fila_tabela = preparar_fila_para_tabela(fila, st.session_state.cadastro_df)
