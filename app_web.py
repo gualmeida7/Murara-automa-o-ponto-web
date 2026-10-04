@@ -21,6 +21,7 @@ import io
 import shutil
 import tempfile
 import zipfile
+from datetime import datetime
 from pathlib import Path
 
 import pandas as pd
@@ -35,6 +36,7 @@ from pipeline import (
     exportar_por_empresa,
     COLUNAS_OBRIGATORIAS_CADASTRO,
 )
+import db_sessao
 from banco_horas import consolidar_banco_horas, ler_banco_horas_secullum, ler_banco_horas_adriano
 from cartao_ponto_pdf import _sem_acento
 from leitura_arquivos import ler_arquivo_generico
@@ -49,6 +51,8 @@ st.set_page_config(
     page_icon="✅",
     layout="wide",
 )
+
+db_sessao.inicializar_banco()
 
 STATUS_LEGIVEL = {
     "FALTA_OU_AUSENCIA": "Falta ou ausência",
@@ -373,6 +377,21 @@ if st.session_state.get("arquivos_confirmados"):
 # ===========================================================================
 if st.session_state.get("preflight_ok"):
     st.header("3. Processar o ponto e calcular o fechamento")
+
+    competencia_atual = st.session_state.get("competencia_input")
+    sessao_salva = db_sessao.obter_sessao(competencia_atual) if competencia_atual else None
+    if sessao_salva and sessao_salva["status"] == "em_andamento":
+        decisoes_salvas = db_sessao.carregar_decisoes(competencia_atual)
+        n = int((decisoes_salvas["classificacao"] != "").sum())
+        ultimo_save = datetime.fromisoformat(sessao_salva["atualizado_em"]).strftime("%d/%m/%Y às %H:%M")
+        st.info(
+            f"📋 **Rascunho encontrado — Fechamento {competencia_atual}**  \n"
+            f"{n} de {sessao_salva['total_excecoes']} exceções já classificadas. "
+            f"Último save: {ultimo_save}.  \n"
+            f"Clique em **Processar** para recarregar e continuar de onde parou, "
+            f"ou use *Recomeçar* na seção 4 para descartar."
+        )
+
     if st.button("⚙️ Processar Ponto e Calcular Fechamento", type="primary"):
         with st.spinner("Lendo o ponto e apurando dia a dia — pode levar alguns segundos..."):
             arquivos = st.session_state.arquivos_confirmados
@@ -383,9 +402,34 @@ if st.session_state.get("preflight_ok"):
                 caminho_espelho=arquivos.get("espelho_ponto", [None])[0],
             )
             st.session_state.apuracao_diaria = apuracao
-            st.session_state.fila_tabela = preparar_fila_para_tabela(fila, st.session_state.cadastro_df)
+            fila_tabela = preparar_fila_para_tabela(fila, st.session_state.cadastro_df)
+
+            # Restaura decisões salvas (cruza por pis + data) e registra a sessão
+            if not fila_tabela.empty:
+                salvas = db_sessao.carregar_decisoes(competencia)
+                if not salvas.empty:
+                    salvas = salvas.rename(columns={"data": "data_exibicao"})
+                    fila_tabela = fila_tabela.merge(
+                        salvas.rename(columns={"classificacao": "_cls", "observacao": "_obs"}),
+                        on=["pis", "data_exibicao"], how="left",
+                    )
+                    tem = fila_tabela["_cls"].notna()
+                    fila_tabela.loc[tem, "classificacao"] = fila_tabela.loc[tem, "_cls"]
+                    fila_tabela.loc[tem, "observacao"] = fila_tabela.loc[tem, "_obs"]
+                    fila_tabela = fila_tabela.drop(columns=["_cls", "_obs"])
+                    st.session_state.rascunho_restaurado = int(tem.sum())
+                db_sessao.criar_ou_atualizar_sessao(
+                    competencia, len(fila_tabela),
+                    "concluido" if (fila_tabela["classificacao"] != "").all() else "em_andamento",
+                )
+
+            st.session_state.fila_tabela = fila_tabela
             st.session_state.competencia_final = competencia
+            st.session_state.pop("editor_excecoes", None)
         st.success(f"Processamento concluído. {len(st.session_state.fila_tabela)} exceção(ões) encontrada(s) para revisão.")
+        restauradas = st.session_state.pop("rascunho_restaurado", 0)
+        if restauradas:
+            st.info(f"📋 Rascunho restaurado — {restauradas} decisão(ões) anterior(es) recuperada(s). Pode continuar de onde parou.")
 
 # ===========================================================================
 # SEÇÃO 4 — Tabela de aprovação embutida (sem CSV intermediário)
@@ -424,11 +468,41 @@ if "fila_tabela" in st.session_state:
         # a linha errada. .loc por índice alinha corretamente mesmo assim.
         st.session_state.fila_tabela.loc[tabela_editada.index, colunas_exibidas] = tabela_editada[colunas_exibidas]
 
-        pendentes = (st.session_state.fila_tabela["classificacao"] == "").sum()
+        # Salva automaticamente no SQLite (só grava o que mudou desde o último save)
+        competencia_salva = st.session_state.competencia_final
+        fila_atual = st.session_state.fila_tabela
+        decididas = fila_atual[fila_atual["classificacao"] != ""]
+        houve_mudanca = db_sessao.salvar_decisoes_em_lote(
+            competencia_salva,
+            decididas.rename(columns={"data_exibicao": "data"})[["pis", "data", "classificacao", "observacao"]],
+        )
+        classificadas = len(decididas)
+        total = len(fila_atual)
+        status = "concluido" if classificadas == total else "em_andamento"
+        sessao = db_sessao.obter_sessao(competencia_salva)
+        if houve_mudanca or sessao is None or sessao["status"] != status or sessao["total_excecoes"] != total:
+            db_sessao.criar_ou_atualizar_sessao(competencia_salva, total, status)
+            sessao = db_sessao.obter_sessao(competencia_salva)
+
+        pendentes = total - classificadas
         if pendentes:
             st.info(f"{pendentes} linha(s) ainda sem decisão — serão tratadas como falta injustificada por padrão.")
-        else:
-            st.success("Todas as exceções já têm uma decisão.")
+        if sessao:
+            if status == "concluido":
+                st.success("✅ Todas as exceções classificadas. Pronto para gerar o fechamento final.")
+            else:
+                st.caption(
+                    f"✓ Rascunho salvo automaticamente — "
+                    f"{classificadas} de {total} exceções classificadas "
+                    f"(Último save: {sessao['atualizado_em'][-8:-3]})"
+                )
+
+    with st.expander("⚠️ Opções"):
+        if st.button("🗑️ Recomeçar — descartar todas as decisões deste mês"):
+            db_sessao.limpar_sessao(st.session_state.competencia_final)
+            for chave in ("fila_tabela", "apuracao_diaria", "arquivos_finais", "editor_excecoes"):
+                st.session_state.pop(chave, None)
+            st.rerun()
 
 # ===========================================================================
 # SEÇÃO 5 — Gerar e baixar o Excel final
