@@ -1,0 +1,45 @@
+# Tema do Fechamento de Folha: uma cor de destaque (azul), superfícies neutras e
+# contraste alto. Definir [theme.light] e [theme.dark] permite alternar o modo
+# no menu do app (ou segue a preferência do sistema).
+
+[theme]
+font = "sans-serif"
+baseFontSize = 15
+baseRadius = "6px"
+buttonRadius = "6px"
+showWidgetBorder = true
+linkUnderline = true
+headingFontSizes = ["2rem", "1.5rem", "1.2rem", "1.05rem", "1rem", "0.9rem"]
+headingFontWeights = [650, 650, 600, 600, 600, 600]
+
+[theme.light]
+primaryColor = "#1d4f91"
+backgroundColor = "#ffffff"
+secondaryBackgroundColor = "#f3f5f8"
+textColor = "#1b2430"
+borderColor = "#cfd6df"
+linkColor = "#1d4f91"
+greenColor = "#1a7f37"
+orangeColor = "#b45309"
+redColor = "#b42318"
+blueColor = "#1d4f91"
+
+[theme.light.sidebar]
+backgroundColor = "#f3f5f8"
+secondaryBackgroundColor = "#e6eaf0"
+
+[theme.dark]
+primaryColor = "#3b7bd4"
+backgroundColor = "#0f1419"
+secondaryBackgroundColor = "#1a212b"
+textColor = "#e8edf3"
+borderColor = "#35404d"
+linkColor = "#8db9f2"
+greenColor = "#3fb950"
+orangeColor = "#e3a23c"
+redColor = "#f26d63"
+blueColor = "#6aa4ec"
+
+[theme.dark.sidebar]
+backgroundColor = "#141a22"
+secondaryBackgroundColor = "#1a212b"
