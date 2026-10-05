@@ -50,6 +50,7 @@ from pipeline import (
     executar_checagens_preflight,
 )
 from banco_horas import consolidar_banco_horas, ler_banco_horas_secullum, ler_banco_horas_adriano
+from feriados import avisos_de_cobertura
 from validacao import ArquivoInvalidoError
 
 
@@ -297,6 +298,9 @@ class AplicativoFolha(tk.Tk):
             banco_horas = consolidar_banco_horas(cadastro["pis"].tolist(), banco_secullum, banco_adriano)
 
             self._status(3)
+            # O calendario padrao (feriados.csv) e' lido dentro da rodada 1; aqui so' pegamos os
+            # avisos (ano sem cobertura, feriado so' por previsao) para mostrar no fim.
+            avisos_feriados = avisos_de_cobertura(data_inicio, data_fim)
             apuracao, fila = rodada_1_gerar_fila_de_excecoes(
                 self.caminhos["afd"].get(), cadastro, data_inicio, data_fim
             )
@@ -327,6 +331,7 @@ class AplicativoFolha(tk.Tk):
                 n_arquivos=len(arquivos_gerados),
                 n_pendencias=n_pendencias,
                 usou_decisoes_rh=usou_decisoes_rh,
+                avisos_feriados=avisos_feriados,
             )
         except ArquivoInvalidoError as e:
             # Erro amigavel, ja' pronto para mostrar direto pra usuaria -
@@ -349,7 +354,8 @@ class AplicativoFolha(tk.Tk):
                 )
             )
 
-    def _finalizar(self, sucesso=False, erro=None, pasta_saida="", n_arquivos=0, n_pendencias=0, usou_decisoes_rh=False):
+    def _finalizar(self, sucesso=False, erro=None, pasta_saida="", n_arquivos=0, n_pendencias=0, usou_decisoes_rh=False,
+                   avisos_feriados=()):
         def atualizar_ui():
             self.botao_processar.config(state="normal", text="Processar Folha de Pagamento")
             if erro:
@@ -376,11 +382,12 @@ class AplicativoFolha(tk.Tk):
                 )
             else:
                 aviso_pendencias = ""
+            aviso_feriados = ("\n\nAtenção (feriados):\n- " + "\n- ".join(avisos_feriados)) if avisos_feriados else ""
             messagebox.showinfo(
                 "Sucesso",
                 f"Planilha gerada com sucesso!\n\n"
                 f"{n_arquivos} arquivo(s) de Relação de Valores salvos em:\n{pasta_saida}"
-                f"{aviso_pendencias}",
+                f"{aviso_pendencias}{aviso_feriados}",
             )
 
         # thread em segundo plano nao pode mexer na UI direto - agenda na thread principal

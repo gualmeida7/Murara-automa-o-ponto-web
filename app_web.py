@@ -37,6 +37,7 @@ from pipeline import (
     COLUNAS_OBRIGATORIAS_CADASTRO,
 )
 import db_sessao
+from feriados import avisos_de_cobertura, carregar_feriados, descrever_feriados
 from banco_horas import consolidar_banco_horas, ler_banco_horas_secullum, ler_banco_horas_adriano
 from cartao_ponto_pdf import _sem_acento
 from leitura_arquivos import ler_arquivo_generico
@@ -57,6 +58,7 @@ db_sessao.inicializar_banco()
 STATUS_LEGIVEL = {
     "FALTA_OU_AUSENCIA": "Falta ou ausência",
     "BATIDA_INCOMPLETA": "Batida incompleta",
+    "FALTA_PARCIAL_CANDIDATA": "Falta parcial (batidas faltando)",
     "INTERVALO_CURTO": "Intervalo curto",
 }
 OPCOES_CLASSIFICACAO = [
@@ -322,7 +324,8 @@ if arquivos_subidos:
             st.session_state.arquivos_confirmados = tipos_confirmados
             st.session_state.pis_adriano = pis_adriano.strip()
             # limpa qualquer processamento anterior, já que os arquivos mudaram
-            for chave in ("cadastro_df", "preflight_ok", "apuracao_diaria", "fila_tabela", "arquivos_finais"):
+            for chave in ("cadastro_df", "preflight_ok", "apuracao_diaria", "fila_tabela", "arquivos_finais",
+                          "feriados_periodo", "avisos_feriados"):
                 st.session_state.pop(chave, None)
             st.success("Arquivos confirmados. Continue na seção 2 abaixo.")
 
@@ -392,7 +395,27 @@ if st.session_state.get("preflight_ok"):
             f"ou use *Recomeçar* na seção 4 para descartar."
         )
 
+    incluir_facultativos = st.checkbox(
+        "Contar pontos facultativos (Carnaval, Corpus Christi, vésperas de Natal e Ano Novo) como feriado",
+        value=False,
+        key="incluir_facultativos",
+        help=(
+            "Marque só se a empresa ou a convenção coletiva concede esses dias. Os feriados nacionais e os de "
+            "Cianorte já são sempre considerados (calendário em feriados.csv). Clique em Processar de novo "
+            "depois de mudar."
+        ),
+    )
+
     if st.button("⚙️ Processar Ponto e Calcular Fechamento", type="primary"):
+        try:
+            feriados = carregar_feriados(incluir_facultativos=incluir_facultativos)
+            avisos_feriados = avisos_de_cobertura(data_inicio, data_fim, incluir_facultativos=incluir_facultativos)
+        except ArquivoInvalidoError as e:
+            st.error(f"**Não foi possível ler o calendário de feriados:** {e}")
+            st.stop()
+        st.session_state.feriados_periodo = descrever_feriados(feriados, data_inicio, data_fim)
+        st.session_state.avisos_feriados = avisos_feriados
+
         with st.spinner("Lendo o ponto e apurando dia a dia — pode levar alguns segundos..."):
             arquivos = st.session_state.arquivos_confirmados
             # AFD (.txt) tem prioridade quando enviado; senão usa o Cartão Ponto (PDF).
@@ -400,6 +423,7 @@ if st.session_state.get("preflight_ok"):
             apuracao, fila = rodada_1_gerar_fila_de_excecoes(
                 caminho_ponto, st.session_state.cadastro_df, data_inicio, data_fim,
                 caminho_espelho=arquivos.get("espelho_ponto", [None])[0],
+                feriados=feriados,
             )
             st.session_state.apuracao_diaria = apuracao
             fila_tabela = preparar_fila_para_tabela(fila, st.session_state.cadastro_df)
@@ -430,6 +454,17 @@ if st.session_state.get("preflight_ok"):
         restauradas = st.session_state.pop("rascunho_restaurado", 0)
         if restauradas:
             st.info(f"📋 Rascunho restaurado — {restauradas} decisão(ões) anterior(es) recuperada(s). Pode continuar de onde parou.")
+
+    if "feriados_periodo" in st.session_state:
+        if st.session_state.feriados_periodo:
+            st.info(
+                "🗓️ **Feriados considerados neste período** (ausência neles não é falta; trabalho neles vale "
+                "hora extra 100%): " + " · ".join(st.session_state.feriados_periodo)
+            )
+        else:
+            st.info("🗓️ Nenhum feriado considerado neste período.")
+        for aviso in st.session_state.get("avisos_feriados", []):
+            st.warning(aviso)
 
 # ===========================================================================
 # SEÇÃO 4 — Tabela de aprovação embutida (sem CSV intermediário)
@@ -500,7 +535,8 @@ if "fila_tabela" in st.session_state:
     with st.expander("⚠️ Opções"):
         if st.button("🗑️ Recomeçar — descartar todas as decisões deste mês"):
             db_sessao.limpar_sessao(st.session_state.competencia_final)
-            for chave in ("fila_tabela", "apuracao_diaria", "arquivos_finais", "editor_excecoes"):
+            for chave in ("fila_tabela", "apuracao_diaria", "arquivos_finais", "editor_excecoes",
+                          "feriados_periodo", "avisos_feriados"):
                 st.session_state.pop(chave, None)
             st.rerun()
 

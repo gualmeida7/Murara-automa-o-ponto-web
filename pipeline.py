@@ -28,13 +28,16 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date, time
 from pathlib import Path
+from typing import Mapping
 
 import pandas as pd
 
 from afd_parser import agrupar_batidas_por_dia
 from leitores_ponto import ler_arquivo_ponto
 from pdf_espelho_ponto import mapear_para_pis, parse_espelho_pdf
-from business_rules import Jornada, apurar_periodo, consolidar_mes, gerar_fila_validacao_rh
+from business_rules import (
+    Jornada, apurar_periodo, consolidar_mes, gerar_fila_validacao_rh, STATUS_FALTA_PARCIAL,
+)
 from banco_horas import consolidar_banco_horas, ler_banco_horas_secullum, ler_banco_horas_adriano
 from validacao import (
     verificar_colunas,
@@ -44,6 +47,7 @@ from validacao import (
     ArquivoInvalidoError,
 )
 from leitura_arquivos import ler_arquivo_generico
+from feriados import avisos_de_cobertura, carregar_feriados
 
 # ---------------------------------------------------------------------------
 # Codigos de evento exigidos pela contabilidade (Secao 4 do briefing)
@@ -219,23 +223,36 @@ def rodada_1_gerar_fila_de_excecoes(
     data_inicio: date,
     data_fim: date,
     caminho_espelho: str | None = None,
+    feriados: Mapping[date, str] | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """
     Retorna (apuracao_diaria_completa, fila_para_validacao_rh).
     `caminho_ponto` pode ser o AFD (.txt) ou o Cartao Ponto do Secullum
     (.pdf) - ver leitores_ponto.py.
 
+    `feriados` ({data: nome}) sao os dias que nao contam como falta e cujo
+    trabalho vale hora extra 100%. Sem ele, le o calendario padrao
+    (`feriados.csv`, ver feriados.py) e imprime os avisos de cobertura.
+
     Com `caminho_espelho` (Espelho de Ponto em PDF), cada dia sem batida na
     fila e' cruzado com as batidas brutas do relogio - ver
     `_anexar_cruzamento_espelho`.
     """
+    if feriados is None:
+        feriados = carregar_feriados()
+        for aviso in avisos_de_cobertura(data_inicio, data_fim):
+            print(f"[aviso] {aviso}")
     resultado_ponto = ler_arquivo_ponto(caminho_ponto, df_cadastro)
     if resultado_ponto.erros_leitura:
         print(f"[aviso] {len(resultado_ponto.erros_leitura)} aviso(s) na leitura do ponto - ver log.")
 
     batidas_por_dia = agrupar_batidas_por_dia(resultado_ponto.batidas)
     jornadas = montar_jornadas(df_cadastro)
-    apuracao = apurar_periodo(batidas_por_dia, jornadas, data_inicio, data_fim)
+    apuracao = apurar_periodo(batidas_por_dia, jornadas, data_inicio, data_fim, feriados=feriados)
+    # Totais impressos pelo proprio Secullum (so' no Cartao Ponto em PDF): viajam
+    # junto da apuracao para a conferencia da rodada 2, sem mudar o retorno.
+    if resultado_ponto.totais_secullum is not None:
+        apuracao.attrs["totais_secullum"] = resultado_ponto.totais_secullum
     fila = gerar_fila_validacao_rh(apuracao)
     fila = _anexar_contexto_secullum(fila, resultado_ponto.espelho_diario)
     if caminho_espelho:
@@ -249,15 +266,37 @@ def rodada_1_gerar_fila_de_excecoes(
 
 CRUZAMENTO_ERRO_RELOGIO = "Provável erro de relógio — verificar"
 CRUZAMENTO_FALTA_REAL = "Provável falta real — confirmar"
+CRUZAMENTO_BATIDA_NAO_IMPORTADA = "Provável erro de relógio / batida não importada — verificar"
+CRUZAMENTO_FALTA_PARCIAL = "Provável falta parcial — confirmar"
+
+# Batidas brutas do Espelho a menos de 2 min uma da outra sao a mesma marcacao
+# duplicada pelo relogio ("Batida duplicada"), nao uma batida a mais.
+TOLERANCIA_BATIDA_DUPLICADA_MIN = 2
+
+
+def _minutos_do_dia(hhmm: str) -> int:
+    horas, minutos = hhmm.split(":")
+    return int(horas) * 60 + int(minutos)
+
+
+def _batidas_brutas_distintas(brutas: list[str]) -> list[str]:
+    distintas: list[str] = []
+    for hora in sorted(brutas, key=_minutos_do_dia):
+        if not distintas or _minutos_do_dia(hora) - _minutos_do_dia(distintas[-1]) > TOLERANCIA_BATIDA_DUPLICADA_MIN:
+            distintas.append(hora)
+    return distintas
 
 
 def _anexar_cruzamento_espelho(fila: pd.DataFrame, dias_espelho: pd.DataFrame) -> pd.DataFrame:
     """
-    Para cada dia SEM batida na fila (status FALTA_OU_AUSENCIA), confere se o
-    Espelho de Ponto mostra alguma batida bruta do relogio naquele dia:
-      - mostra   -> a batida existiu no equipamento mas nao chegou ao Cartao
-                    Ponto: "Provavel erro de relogio - verificar";
-      - nao mostra -> "Provavel falta real - confirmar".
+    Usa o Espelho de Ponto (batidas brutas do relogio) para ajudar o RH nos dias
+    em que o Cartao Ponto esta incompleto:
+      - dia SEM batida (FALTA_OU_AUSENCIA): se o Espelho mostra alguma batida,
+        "Provavel erro de relogio - verificar"; senao "Provavel falta real - confirmar";
+      - dia com batidas faltando (FALTA_PARCIAL_CANDIDATA): se o Espelho tem MAIS
+        batidas distintas que o Cartao, "Provavel erro de relogio / batida nao
+        importada - verificar" (e lista as batidas brutas no motivo); senao
+        "Provavel falta parcial - confirmar".
     Adiciona a coluna `cruzamento_espelho` (NaN nas demais linhas) e acrescenta
     o resultado ao `motivo_validacao`. Nao decide nada: a operadora continua
     classificando cada linha na tela de aprovacao.
@@ -265,24 +304,31 @@ def _anexar_cruzamento_espelho(fila: pd.DataFrame, dias_espelho: pd.DataFrame) -
     if fila.empty:
         return fila.assign(cruzamento_espelho=pd.Series(dtype=str))
 
-    com_batida = {
-        (pis, pd.Timestamp(data))
+    brutas_por_dia = {
+        (pis, pd.Timestamp(data)): _batidas_brutas_distintas(list(brutas))
         for pis, data, brutas in zip(dias_espelho["pis"], dias_espelho["data"], dias_espelho["batidas_brutas"])
-        if len(brutas) > 0
     }
 
     def _classificar(linha):
-        if linha["status"] != "FALTA_OU_AUSENCIA":
-            return pd.NA
-        existe = (linha["pis"], pd.Timestamp(linha["data"])) in com_batida
-        return CRUZAMENTO_ERRO_RELOGIO if existe else CRUZAMENTO_FALTA_REAL
+        brutas = brutas_por_dia.get((linha["pis"], pd.Timestamp(linha["data"])), [])
+        if linha["status"] == "FALTA_OU_AUSENCIA":
+            return CRUZAMENTO_ERRO_RELOGIO if brutas else CRUZAMENTO_FALTA_REAL
+        if linha["status"] == STATUS_FALTA_PARCIAL:
+            return CRUZAMENTO_BATIDA_NAO_IMPORTADA if len(brutas) > linha["n_batidas"] else CRUZAMENTO_FALTA_PARCIAL
+        return pd.NA
+
+    def _detalhe_espelho(linha):
+        brutas = brutas_por_dia.get((linha["pis"], pd.Timestamp(linha["data"])), [])
+        texto = f" — Espelho de Ponto: {linha['cruzamento_espelho']}"
+        if brutas and linha["cruzamento_espelho"] == CRUZAMENTO_BATIDA_NAO_IMPORTADA:
+            texto += f" (batidas no Espelho: {', '.join(brutas)})"
+        return texto
 
     fila = fila.copy()
     fila["cruzamento_espelho"] = fila.apply(_classificar, axis=1)
     tem = fila["cruzamento_espelho"].notna()
-    fila.loc[tem, "motivo_validacao"] = (
-        fila.loc[tem, "motivo_validacao"] + " — Espelho de Ponto: " + fila.loc[tem, "cruzamento_espelho"]
-    )
+    if tem.any():
+        fila.loc[tem, "motivo_validacao"] = fila.loc[tem, "motivo_validacao"] + fila.loc[tem].apply(_detalhe_espelho, axis=1)
     return fila
 
 
@@ -374,8 +420,9 @@ def rodada_2_gerar_relacao_de_valores(
     df = df.merge(df_consignados, on="pis", how="left")
     df = df.merge(df_banco_horas, on="pis", how="left")
 
-    for col in ["horas_extra_50", "horas_extra_100", "dias_falta", "dias_desconto_va",
-                "semanas_perde_dsr", "valor_consignado", "saldo_banco_horas"]:
+    for col in ["horas_extra_50", "horas_extra_100", "horas_falta", "atraso_horas", "horas_falta_parcial",
+                "dias_falta", "dias_falta_parcial", "dias_falta_justificada", "dias_falta_injustificada",
+                "dias_desconto_va", "semanas_perde_dsr", "valor_consignado", "saldo_banco_horas"]:
         if col in df.columns:
             df[col] = df[col].fillna(0)
 
@@ -392,7 +439,7 @@ def rodada_2_gerar_relacao_de_valores(
         "nome_colaborador": df["nome"],
         COD_HE_50: df["horas_extra_50"],
         COD_HE_100: df["horas_extra_100"],
-        COD_HORAS_FALTA: df["dias_falta"] * 0,  # preencher com horas de falta reais se a jornada variar por dia
+        COD_HORAS_FALTA: df["horas_falta"],
         COD_DIAS_FALTA: df["dias_falta"],
         COD_DESCONTO_DSR: df["valor_desconto_dsr"],
         COD_ADIANTAMENTO_CONSIGNADO: df["valor_consignado"],
@@ -404,10 +451,55 @@ def rodada_2_gerar_relacao_de_valores(
         # aba "Contabilidade":
         "_perde_premio_copr": df["perde_copr"].fillna(False),
         "_dias_falta_total": df["dias_falta"],
+        "_dias_falta_justificada": df["dias_falta_justificada"],
+        "_dias_falta_injustificada": df["dias_falta_injustificada"],
+        "_dias_falta_parcial": df["dias_falta_parcial"],
+        "_horas_falta_parcial": df["horas_falta_parcial"],
+        "_atraso_horas": df["atraso_horas"],
         "_dias_desconto_va": df["dias_desconto_va"],
         "_semanas_perde_dsr": df["semanas_perde_dsr"],
     })
+
+    totais_secullum = apuracao_diaria.attrs.get("totais_secullum")
+    if totais_secullum is not None:
+        saida = saida.join(_conferencia_com_secullum(df, totais_secullum))
     return saida
+
+
+def _conferencia_com_secullum(df: pd.DataFrame, totais_secullum: pd.DataFrame) -> pd.DataFrame:
+    """
+    Colunas informativas "Nosso x Secullum" (so' quando o ponto veio do Cartao
+    Ponto em PDF, que traz a linha TOTAIS do proprio Secullum). NAO altera
+    nenhum valor da folha: serve para o RH ver onde o calculo do sistema se
+    afasta do Secullum. Tudo em dias ou horas decimais; o Secullum imprime
+    horas como hh:mm, que o parser ja' converte para minutos.
+    """
+    sec = totais_secullum.dropna(subset=["pis"]).drop_duplicates("pis").set_index("pis")
+
+    def _do_secullum(coluna: str, em_horas: bool) -> pd.Series:
+        if coluna not in sec.columns:
+            return pd.Series(float("nan"), index=df.index)
+        valores = df["pis"].map(sec[coluna]).astype(float)
+        return (valores / 60).round(2) if em_horas else valores
+
+    nosso = {
+        "dias_falta": df["dias_falta"],
+        "horas_falta": df["horas_falta"],
+        "he50": df["horas_extra_50"],
+        "he100": df["horas_extra_100"],
+    }
+    do_sec = {
+        "dias_falta": _do_secullum("faltas_dias", em_horas=False),
+        "horas_falta": _do_secullum("faltas_horas", em_horas=True),
+        "he50": _do_secullum("extra_50", em_horas=True),
+        "he100": _do_secullum("extra_100", em_horas=True),
+    }
+    colunas = {}
+    for chave in nosso:
+        colunas[f"_sec_{chave}"] = do_sec[chave]
+    for chave in nosso:
+        colunas[f"_dif_{chave}"] = (nosso[chave] - do_sec[chave]).round(2)
+    return pd.DataFrame(colunas, index=df.index)
 
 
 def exportar_por_empresa(df_relacao: pd.DataFrame, pasta_saida: str) -> list[Path]:
@@ -456,16 +548,38 @@ _CABECALHOS_CONTABIL = {
     COD_DESCONTO_DSR: "Desconto DSR (8794)", COD_ADIANTAMENTO_CONSIGNADO: "Consignado (0981)",
     COD_OUTROS_BANCO_HORAS: "Banco de Horas (0999)",
 }
-_COLUNAS_AUX = ["_perde_premio_copr", "_dias_falta_total", "_dias_desconto_va", "_semanas_perde_dsr"]
+_COLUNAS_AUX = [
+    "_perde_premio_copr", "_dias_falta_total", "_dias_falta_justificada", "_dias_falta_injustificada",
+    "_dias_falta_parcial", "_horas_falta_parcial", "_atraso_horas", "_dias_desconto_va", "_semanas_perde_dsr",
+]
+# Bloco "Nosso x Secullum": so' existe quando o ponto veio do Cartao Ponto em PDF.
+_COLUNAS_CONFERENCIA_SECULLUM = [
+    "_sec_dias_falta", "_dif_dias_falta", "_sec_horas_falta", "_dif_horas_falta",
+    "_sec_he50", "_dif_he50", "_sec_he100", "_dif_he100",
+]
 _CABECALHOS_AUX = {
     "_perde_premio_copr": "Prêmio COPR", "_dias_falta_total": "Dias de Falta (total)",
+    "_dias_falta_justificada": "Dias Falta Justificada", "_dias_falta_injustificada": "Dias Falta Injustificada",
+    "_dias_falta_parcial": "Dias Falta Parcial", "_horas_falta_parcial": "Horas Falta Parcial",
+    "_atraso_horas": "Horas de Atraso",
     "_dias_desconto_va": "Dias Desconto VA", "_semanas_perde_dsr": "Semanas c/ Perda de DSR",
+    "_sec_dias_falta": "Dias Falta (Secullum)", "_dif_dias_falta": "Dif. Dias Falta (nosso - Secullum)",
+    "_sec_horas_falta": "Horas Falta (Secullum)", "_dif_horas_falta": "Dif. Horas Falta",
+    "_sec_he50": "HE 50% (Secullum)", "_dif_he50": "Dif. HE 50%",
+    "_sec_he100": "HE 100% (Secullum)", "_dif_he100": "Dif. HE 100%",
 }
 
 # Colunas monetarias/numericas que levam formato "0,00" (2 casas decimais explicitas)
-_COLUNAS_DECIMAIS = {COD_HE_50, COD_HE_100, COD_HORAS_FALTA, COD_DESCONTO_DSR, COD_ADIANTAMENTO_CONSIGNADO, COD_OUTROS_BANCO_HORAS}
+_COLUNAS_DECIMAIS = {
+    COD_HE_50, COD_HE_100, COD_HORAS_FALTA, COD_DESCONTO_DSR, COD_ADIANTAMENTO_CONSIGNADO, COD_OUTROS_BANCO_HORAS,
+    "_horas_falta_parcial", "_atraso_horas", "_sec_horas_falta", "_dif_horas_falta",
+    "_sec_he50", "_dif_he50", "_sec_he100", "_dif_he100",
+}
 # Colunas de quantidade inteira (ainda assim formatadas com precisao explicita)
-_COLUNAS_INTEIRAS = {COD_DIAS_FALTA, "_dias_falta_total", "_dias_desconto_va", "_semanas_perde_dsr"}
+_COLUNAS_INTEIRAS = {
+    COD_DIAS_FALTA, "_dias_falta_total", "_dias_falta_justificada", "_dias_falta_injustificada",
+    "_dias_falta_parcial", "_dias_desconto_va", "_semanas_perde_dsr", "_sec_dias_falta", "_dif_dias_falta",
+}
 # Colunas centralizadas (codigos, matricula, competencia)
 _COLUNAS_CENTRALIZADAS = {"codigo_empresa", "competencia", "codigo_folha", "_perde_premio_copr"}
 
@@ -511,6 +625,8 @@ def _escrever_workbook_formatado(grupo: pd.DataFrame, caminho: Path) -> None:
                 v = linha[c]
                 if c == "_perde_premio_copr":
                     v = "Perde" if bool(v) else "Não Perde"
+                elif pd.isna(v):
+                    v = None  # celula em branco (ex.: colaborador sem linha de TOTAIS no Secullum)
                 valores.append(v)
             ws.append(valores)
 
@@ -546,7 +662,7 @@ def _escrever_workbook_formatado(grupo: pd.DataFrame, caminho: Path) -> None:
     escrever_aba(ws_contabil, _COLUNAS_CONTABIL, _CABECALHOS_CONTABIL, com_alerta=False)
 
     ws_rh = wb.create_sheet("Conferência RH")
-    colunas_rh = _COLUNAS_CONTABIL + _COLUNAS_AUX
+    colunas_rh = _COLUNAS_CONTABIL + _COLUNAS_AUX + [c for c in _COLUNAS_CONFERENCIA_SECULLUM if c in grupo.columns]
     cabecalhos_rh = {**_CABECALHOS_CONTABIL, **_CABECALHOS_AUX}
     escrever_aba(ws_rh, colunas_rh, cabecalhos_rh, com_alerta=True)
 

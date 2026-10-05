@@ -156,8 +156,8 @@ por pessoa) e calcula, sem digitação:
 
 - **Horas extra 50%** — minutos trabalhados além da carga horária diária,
   em dia útil.
-- **Horas extra 100%** — qualquer trabalho em dia não útil (domingo, e
-  você pode injetar feriados na mesma lógica).
+- **Horas extra 100%** — qualquer trabalho em dia não útil (domingo ou
+  feriado — ver "Calendário de feriados" abaixo).
 - **Atraso** — minutos faltando para a carga horária, respeitando a
   tolerância configurável (10 min por padrão, ajustável por colaborador).
 - **Falta candidata** — dia útil sem nenhuma batida.
@@ -183,6 +183,38 @@ Ambos os limites são configuráveis por colaborador (`Jornada.tolerancia_por_ba
 e `Jornada.tolerancia_min`), caso a convenção coletiva da empresa preveja
 valores diferentes.
 
+## Calendário de feriados (`feriados.csv`)
+
+Feriado não é dia de trabalho: **ausência num feriado não é falta** (não tira o
+COPR, não desconta VA nem DSR e não vira exceção para o RH) e **trabalho num feriado
+vale hora extra 100%**, a mesma regra do domingo. O calendário é lido de
+`feriados.csv`, **sem internet**, e cobre **2025 a 2199**:
+
+| Escopo | O que tem | Conta como feriado? |
+|---|---|---|
+| `nacional` | os 10 feriados legais (Consciência Negra só a partir de 2024) | sim |
+| `municipal` | Cianorte: 13/05 (padroeira) e 26/07 (aniversário/emancipação) | sim |
+| `estadual` | 19/12 (Emancipação do Paraná) — pela Justiça do Trabalho não é feriado civil (só servidores) | não |
+| `facultativo` | Carnaval (seg/ter), Corpus Christi, véspera de Natal e de Ano Novo | não |
+
+A coluna `situacao` diz o grau de certeza: `lei` (data em lei federal/cálculo da Páscoa),
+`confirmado` (decreto do ano verificado: 2025 e 2026 de Cianorte, pelos Decretos Judiciários
+do TJPR) e `previsto` (data fixa projetada — **confirme o decreto do ano**, pois a prefeitura
+pode transferir o aniversário; em 2025, por exemplo, foi para 28/07). O sistema mostra um
+aviso quando um feriado do período é só previsão, e outro quando o ano não está no arquivo.
+
+Para tratar um dia de outro jeito, preencha `vale_para_empresa` na linha com `sim` ou `nao`
+(vazio = padrão do escopo). No app web há ainda a opção "Contar pontos facultativos como
+feriado", que vale para todos de uma vez.
+
+**Atualização anual** (por volta de novembro, quando o TJPR publica o calendário do ano
+seguinte): acrescente o ano em `MUNICIPAIS_CONFIRMADOS` em `gerar_feriados.py` e rode
+`python gerar_feriados.py`. O script **mescla** com o arquivo existente — não sobrescreve nem
+duplica linhas, preserva o `sim`/`nao` que o RH escreveu e troca a previsão do ano pelos
+dados confirmados. `python gerar_feriados.py --verificar` confere os nacionais com a BrasilAPI
+(usa internet; datas de 2025 a 2199 conferidas, sem divergência). O `feriados.csv` precisa
+acompanhar o sistema (inclusive num pacote `.exe`).
+
 ## 2. Tratamento de inconsistências (o RH só valida exceções)
 
 `business_rules.apurar_dia()` nunca decide sozinho se um dia sem batida é
@@ -191,8 +223,24 @@ True`) e explica o motivo (`motivo_validacao`). `gerar_fila_validacao_rh()`
 filtra só essas linhas. Hoje, os casos sinalizados são:
 
 - Dia útil sem nenhuma batida (`FALTA_OU_AUSENCIA`)
-- Número de batidas diferente de 2 ou 4 (`BATIDA_INCOMPLETA`)
+- Dia com 1, 2 ou 3 batidas que não cobrem a jornada (`FALTA_PARCIAL_CANDIDATA`): possível
+  falta de meio período (ex.: faltou à tarde). Só 2 batidas de entrada e saída que cobrem
+  a jornada inteira são aceitas como turno corrido. O sistema estima os minutos faltantes
+  (`minutos_falta_parcial`); se nenhum período (manhã/tarde) ficou completo, o dia vale
+  como falta de dia inteiro, igual ao dia sem batida.
+- Mais de 4 batidas (`BATIDA_INCOMPLETA`)
 - Intervalo de almoço menor que 60 minutos (`INTERVALO_CURTO`)
+
+Com o Espelho de Ponto, os dias sem batida e os de falta parcial são cruzados com as
+batidas brutas do relógio ("Provável erro de relógio / batida não importada" quando o
+Espelho tem mais batidas que o Cartão; senão "Provável falta real/parcial"). Nada é
+decidido sozinho. Decisão do RH numa falta parcial: *justificada/injustificada* soma os
+minutos em horas de falta (cód. 8069) e tira o COPR; *erro de relógio — abonar* não conta
+nada. VA e DSR continuam por dia inteiro.
+
+O cód. 8069 (horas de falta) = atraso além da tolerância + horas de falta parcial. Com o
+Cartão Ponto em PDF, a aba "Conferência RH" mostra também os totais do próprio Secullum ao
+lado dos nossos, com a diferença (informativo; não altera nenhum valor).
 
 Essa fila é exportada como `fila_validacao_rh.csv` e carregada direto no
 `dashboard_aprovacao.html` — o RH só vê essas linhas, não o arquivo
@@ -330,6 +378,6 @@ para validar o ambiente antes de apontar para os arquivos reais.
 3. Definir a fonte do valor de um dia de DSR por colaborador
    (`valor_dia_dsr_por_pis` em `pipeline.py`) — isso normalmente vem do
    sistema de folha em si, fora do escopo do ponto.
-4. Regra de feriados: hoje só domingo é tratado como "dia não útil" com HE
-   100%; um calendário de feriados pode ser adicionado como uma lista de
-   datas extra em `apurar_dia()`.
+4. ~~Regra de feriados~~ — feita: ver "Calendário de feriados". Falta só a
+   cliente confirmar se a empresa concede Carnaval/Corpus Christi/vésperas e
+   o que diz a convenção coletiva sobre feriados.
