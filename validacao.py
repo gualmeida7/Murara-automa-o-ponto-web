@@ -12,7 +12,10 @@ qual arquivo e qual coluna esta faltando.
 from __future__ import annotations
 
 import re
+import unicodedata
+from datetime import datetime, time, timedelta
 
+import numpy as np
 import pandas as pd
 
 
@@ -158,3 +161,104 @@ def normalizar_identificador_colaborador(
     df = df.copy()
     df[coluna_id] = resolvidos
     return df
+
+
+# ---------------------------------------------------------------------------
+# Conversores compartilhados (sim/nao, horas, valores em R$)
+# ---------------------------------------------------------------------------
+_SIM = {"sim", "s", "1", "true", "verdadeiro", "x"}
+_NAO = {"nao", "n", "0", "false", "falso"}
+
+
+def sem_acento_minusculo(valor) -> str:
+    texto = unicodedata.normalize("NFKD", str(valor))
+    return "".join(c for c in texto if not unicodedata.combining(c)).strip().lower()
+
+
+def _texto_da_celula(valor) -> str:
+    # 1.0 (Excel com celulas vazias na coluna vira float) tem que valer "1"
+    if isinstance(valor, float) and valor.is_integer():
+        return str(int(valor))
+    return str(valor)
+
+
+def ler_sim_nao(valor, onde: str, coluna: str, padrao: bool | None = None) -> bool | None:
+    """
+    Le uma celula sim/nao (sim/s/1/true/x e nao/n/0/false, sem diferenciar
+    maiusculas nem acento). Vazio devolve `padrao`. Qualquer outra coisa levanta
+    `ArquivoInvalidoError`; `onde` e' o trecho "arquivo ('caminho'), linha N" da mensagem.
+    """
+    if valor is None or pd.isna(valor) or str(valor).strip() == "":
+        return padrao
+    texto = sem_acento_minusculo(_texto_da_celula(valor))
+    if texto in _SIM:
+        return True
+    if texto in _NAO:
+        return False
+    raise ArquivoInvalidoError(
+        f"{onde}: o valor '{valor}' da coluna '{coluna}' não é válido. Use 'sim' ou 'não' (ou deixe vazio)."
+    )
+
+
+def _horas_de_valor(valor) -> float:
+    """Converte UM valor em horas decimais (sem arredondar). Levanta ValueError se nao entender."""
+    if isinstance(valor, (bool, np.bool_)):
+        raise ValueError("valor lógico não é horas")
+    if isinstance(valor, (pd.Timedelta, timedelta, np.timedelta64)):
+        return pd.Timedelta(valor).total_seconds() / 3600
+    if isinstance(valor, datetime):  # celula [h]:mm do Excel > 24h vem como data a partir de 30/12/1899
+        return (valor - datetime(1899, 12, 30)).total_seconds() / 3600
+    if isinstance(valor, time):
+        return valor.hour + valor.minute / 60 + valor.second / 3600
+    if isinstance(valor, (int, float, np.integer, np.floating)):
+        return float(valor)
+
+    texto = str(valor).strip().replace(" ", "")
+    sinal = -1 if texto.startswith("-") else 1
+    sem_sinal = texto[1:] if texto[:1] in ("+", "-") else texto
+    if ":" in sem_sinal:
+        partes = sem_sinal.split(":")
+        if len(partes) not in (2, 3) or not all(p.isdigit() for p in partes) or int(partes[1]) > 59:
+            raise ValueError("hh:mm inválido")
+        horas, minutos = int(partes[0]), int(partes[1])
+        segundos = int(partes[2]) if len(partes) == 3 else 0
+        return sinal * (horas + minutos / 60 + segundos / 3600)
+    if "," in sem_sinal:  # "1.234,5" (milhar com ponto) ou "5,5"
+        sem_sinal = sem_sinal.replace(".", "").replace(",", ".")
+    if not re.fullmatch(r"\d+(\.\d+)?", sem_sinal):
+        raise ValueError("número inválido")
+    return sinal * float(sem_sinal)
+
+
+def converter_horas_decimais(valor, onde: str, coluna: str) -> float:
+    """
+    Horas decimais (2 casas, como as demais colunas de horas) a partir de numero
+    (virgula ou ponto), "hh:mm" (inclusive negativo, "-05:10") ou dos
+    datetime.time / timedelta que o pandas devolve para celulas de hora do Excel.
+    Vazio vale 0. Valor invalido levanta `ArquivoInvalidoError` ("onde" traz arquivo e linha).
+    """
+    if valor is None or (not isinstance(valor, (time, timedelta, np.timedelta64)) and pd.isna(valor))             or str(valor).strip() == "":
+        return 0.0
+    try:
+        return round(_horas_de_valor(valor), 2)
+    except (ValueError, OverflowError):
+        raise ArquivoInvalidoError(
+            f"{onde}: o valor '{valor}' da coluna '{coluna}' não é um número de horas válido. "
+            "Use um número (ex.: 5,5), horas e minutos (ex.: 05:30 ou -05:10) ou uma célula de hora do Excel."
+        ) from None
+
+
+def converter_valor_monetario(valor, onde: str, coluna: str) -> float | None:
+    """Numero ou texto brasileiro ("62,50", "R$ 62,50", "1.234,56") -> float. Vazio -> None."""
+    if valor is None or pd.isna(valor) or str(valor).strip() == "":
+        return None
+    if isinstance(valor, (int, float, np.integer, np.floating)) and not isinstance(valor, (bool, np.bool_)):
+        return float(valor)
+    texto = re.sub(r"^R\$\s*", "", str(valor).strip(), flags=re.IGNORECASE).replace(" ", "")
+    if "," in texto:
+        texto = texto.replace(".", "").replace(",", ".")
+    if not re.fullmatch(r"\d+(\.\d+)?", texto):
+        raise ArquivoInvalidoError(
+            f"{onde}: o valor '{valor}' da coluna '{coluna}' não é um valor em R$ válido. Use por exemplo 62,50."
+        )
+    return float(texto)

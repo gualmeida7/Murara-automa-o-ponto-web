@@ -41,6 +41,7 @@ from tkinter import ttk, filedialog, messagebox
 import pandas as pd
 
 from pipeline import (
+    avisos_banco_horas,
     carregar_cadastro_colaboradores,
     carregar_consignados,
     rodada_1_gerar_fila_de_excecoes,
@@ -296,6 +297,7 @@ class AplicativoFolha(tk.Tk):
                 caminho_banco_adriano=self.caminhos["banco_adriano"].get(),
             )
             banco_horas = consolidar_banco_horas(cadastro["pis"].tolist(), banco_secullum, banco_adriano)
+            avisos_banco = avisos_banco_horas(cadastro, banco_secullum, banco_adriano)
 
             self._status(3)
             # O calendario padrao (feriados.csv) e' lido dentro da rodada 1; aqui so' pegamos os
@@ -332,6 +334,7 @@ class AplicativoFolha(tk.Tk):
                 n_pendencias=n_pendencias,
                 usou_decisoes_rh=usou_decisoes_rh,
                 avisos_feriados=avisos_feriados,
+                avisos_banco=avisos_banco,
             )
         except ArquivoInvalidoError as e:
             # Erro amigavel, ja' pronto para mostrar direto pra usuaria -
@@ -355,7 +358,7 @@ class AplicativoFolha(tk.Tk):
             )
 
     def _finalizar(self, sucesso=False, erro=None, pasta_saida="", n_arquivos=0, n_pendencias=0, usou_decisoes_rh=False,
-                   avisos_feriados=()):
+                   avisos_feriados=(), avisos_banco=()):
         def atualizar_ui():
             self.botao_processar.config(state="normal", text="Processar Folha de Pagamento")
             if erro:
@@ -383,11 +386,12 @@ class AplicativoFolha(tk.Tk):
             else:
                 aviso_pendencias = ""
             aviso_feriados = ("\n\nAtenção (feriados):\n- " + "\n- ".join(avisos_feriados)) if avisos_feriados else ""
+            aviso_banco = ("\n\nAtenção (banco de horas):\n- " + "\n- ".join(avisos_banco)) if avisos_banco else ""
             messagebox.showinfo(
                 "Sucesso",
                 f"Planilha gerada com sucesso!\n\n"
                 f"{n_arquivos} arquivo(s) de Relação de Valores salvos em:\n{pasta_saida}"
-                f"{aviso_pendencias}{aviso_feriados}",
+                f"{aviso_pendencias}{aviso_feriados}{aviso_banco}",
             )
 
         # thread em segundo plano nao pode mexer na UI direto - agenda na thread principal

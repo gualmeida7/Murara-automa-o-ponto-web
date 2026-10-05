@@ -24,11 +24,11 @@ cadastro = pd.DataFrame([
     {"pis": "10000000002", "matricula": "M002", "nome": "Sidney Souza",
      "codigo_empresa": "02", "razao_social": "Cianorte Tubos LTDA",
      "entrada": "07:00", "saida_almoco": "11:00", "retorno_almoco": "12:00", "saida": "16:00",
-     "dias_trabalho": "0,1,2,3,4"},
+     "dias_trabalho": "0,1,2,3,4", "banco_horas": "sim"},
     {"pis": "10000000003", "matricula": "M003", "nome": "Adriano Costa",
      "codigo_empresa": "01", "razao_social": "Macaneiro e Gonzaga LTDA",
      "entrada": "08:00", "saida_almoco": "12:00", "retorno_almoco": "13:00", "saida": "17:00",
-     "dias_trabalho": "0,1,2,3,4"},
+     "dias_trabalho": "0,1,2,3,4", "banco_horas": "sim"},
 ])
 cadastro.to_excel("dados/cadastro_colaboradores.xlsx", index=False)
 
@@ -107,6 +107,8 @@ decisoes.to_csv("saida/decisoes_rh.csv", index=False)
 consignados = carregar_consignados("dados/consignados.xlsx", cadastro=cadastro_lido)
 banco_secullum = ler_banco_horas_secullum("dados/banco_horas_secullum.xlsx", cadastro=cadastro_lido)
 banco_adriano = ler_banco_horas_adriano("dados/banco_horas_adriano.xlsx", "10000000003", cadastro=cadastro_lido)
+# Quem tem saldo de banco precisa estar com banco_horas = sim no cadastro (senao, erro no preflight)
+executar_checagens_preflight(cadastro_lido, consignados, banco_secullum, banco_adriano)
 banco_horas = consolidar_banco_horas(cadastro_lido["pis"].tolist(), banco_secullum, banco_adriano)
 print("\n-- Banco de horas consolidado --")
 print(banco_horas.to_string(index=False))

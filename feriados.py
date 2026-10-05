@@ -27,7 +27,6 @@ explicito sempre prevalece sobre o padrao.
 
 from __future__ import annotations
 
-import unicodedata
 from datetime import date
 from pathlib import Path
 from typing import Mapping
@@ -35,7 +34,7 @@ from typing import Mapping
 import pandas as pd
 
 from leitura_arquivos import ler_arquivo_generico
-from validacao import ArquivoInvalidoError, verificar_colunas
+from validacao import ArquivoInvalidoError, ler_sim_nao, sem_acento_minusculo, verificar_colunas
 
 CAMINHO_PADRAO = Path(__file__).with_name("feriados.csv")
 NOME_AMIGAVEL = "Calendário de Feriados"
@@ -45,8 +44,6 @@ ESCOPOS = ("nacional", "estadual", "municipal", "facultativo")
 # Padrao de cada escopo quando a coluna `vale_para_empresa` esta vazia.
 VALE_POR_PADRAO = {"nacional": True, "municipal": True, "estadual": False, "facultativo": False}
 
-_SIM = {"sim", "s", "1", "true", "verdadeiro", "x"}
-_NAO = {"nao", "n", "0", "false", "falso"}
 _DIAS_SEMANA = ["seg", "ter", "qua", "qui", "sex", "sáb", "dom"]
 
 
@@ -61,24 +58,9 @@ def converter_datas(serie: pd.Series) -> pd.Series:
     return iso.fillna(pd.to_datetime(texto, format="%d/%m/%Y", errors="coerce"))
 
 
-def _sem_acento_minusculo(valor) -> str:
-    texto = unicodedata.normalize("NFKD", str(valor))
-    return "".join(c for c in texto if not unicodedata.combining(c)).strip().lower()
-
-
 def _ler_vale(valor, linha_arquivo: int, caminho: Path) -> bool | None:
     """True/False quando preenchido; None quando vazio (vale o padrao do escopo)."""
-    if pd.isna(valor) or str(valor).strip() == "":
-        return None
-    texto = _sem_acento_minusculo(valor)
-    if texto in _SIM:
-        return True
-    if texto in _NAO:
-        return False
-    raise ArquivoInvalidoError(
-        f"{NOME_AMIGAVEL} ('{caminho}'), linha {linha_arquivo}: o valor '{valor}' da coluna "
-        "'vale_para_empresa' não é válido. Use 'sim', 'nao' ou deixe vazio."
-    )
+    return ler_sim_nao(valor, f"{NOME_AMIGAVEL} ('{caminho}'), linha {linha_arquivo}", "vale_para_empresa")
 
 
 def carregar_calendario(caminho: str | Path | None = None, incluir_facultativos: bool = False) -> pd.DataFrame:
@@ -99,7 +81,7 @@ def carregar_calendario(caminho: str | Path | None = None, incluir_facultativos:
             "não é válida. Use AAAA-MM-DD (ou dd/mm/aaaa)."
         )
 
-    escopos = df["escopo"].map(_sem_acento_minusculo)
+    escopos = df["escopo"].map(sem_acento_minusculo)
     for posicao in escopos[~escopos.isin(ESCOPOS)].index:
         raise ArquivoInvalidoError(
             f"{NOME_AMIGAVEL} ('{caminho}'), linha {posicao + 2}: o escopo '{df.at[posicao, 'escopo']}' "
@@ -120,7 +102,7 @@ def carregar_calendario(caminho: str | Path | None = None, incluir_facultativos:
         "data": datas,
         "nome": df["nome"].astype(str).str.strip(),
         "escopo": escopos,
-        "situacao": df["situacao"].map(_sem_acento_minusculo) if "situacao" in df.columns else "",
+        "situacao": df["situacao"].map(sem_acento_minusculo) if "situacao" in df.columns else "",
         "vale": vale,
     })
 

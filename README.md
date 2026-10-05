@@ -17,6 +17,7 @@ formato exigido pela contabilidade.
 | `validacao.py` | Validação defensiva compartilhada — colunas obrigatórias e checagem pré-voo de PIS/matrícula — com a exceção amigável `ArquivoInvalidoError`. |
 | `pipeline.py` | Orquestra tudo e gera um arquivo `.xlsx` por empresa no layout da "Relação de Valores". |
 | `dashboard_aprovacao.html` | Painel de aprovação — abra no navegador, carregue o CSV de exceções, classifique, exporte a decisão. Não depende de instalar nada. |
+| `teste_banco_dsr.py` | Testes do banco de horas (colunas do cadastro, roteamento, preflight, saldo em hh:mm) e do desconto de DSR (8794) em dias ou em valor. `pytest teste_banco_dsr.py`. |
 | `teste_sintetico.py` | Gera dados fictícios e roda o pipeline inteiro — use como prova de conceito e como referência do formato de cada planilha de entrada. |
 | `app_gui.py` | Interface gráfica (tkinter) para quem não programa: botões para selecionar os arquivos e um botão "Processar Folha de Pagamento". Ver seção "Aplicativo visual (desktop)" abaixo. |
 | `app_web.py` | Versão 100% web (Streamlit), numa única tela: upload arrastar-e-soltar, checagem pré-voo instantânea, tabela de aprovação embutida e download direto do Excel — sem nenhum arquivo intermediário. Ver seção "Aplicativo web (Streamlit)" abaixo. |
@@ -161,8 +162,9 @@ por pessoa) e calcula, sem digitação:
 - **Atraso** — minutos faltando para a carga horária, respeitando a
   tolerância configurável (10 min por padrão, ajustável por colaborador).
 - **Falta candidata** — dia útil sem nenhuma batida.
-- **DSR** — calculado na consolidação mensal, proporcional às semanas com
-  falta injustificada.
+- **DSR** — calculado na consolidação mensal: uma perda de DSR por semana ISO com pelo
+  menos uma falta de DIA INTEIRO injustificada (falta parcial e atraso não contam). Veja
+  "DSR (cód. 8794)" abaixo para a unidade em que o 8794 é lançado.
 
 Isso substitui as etapas "apontamentos manuais a lápis" e "consolidação
 gerencial" digitada.
@@ -305,6 +307,73 @@ Em `consolidar_mes()`:
   classificados como `FALTA_INJUSTIFICADA` — faltas justificadas não
   descontam o benefício, seguindo a regra que você descreveu.
 
+## Colunas opcionais do Cadastro de Colaboradores
+
+Nenhuma é obrigatória: um cadastro antigo, sem elas, funciona exatamente como antes.
+
+| Coluna | Padrão (vazio ou ausente) | Para que serve |
+|---|---|---|
+| `banco_horas` | `não` | O colaborador está no banco de horas (veja "Banco de horas" abaixo). |
+| `registra_ponto` | `sim` | O colaborador usa o relógio de ponto. `não` = fica fora da apuração. |
+| `valor_dia_dsr` | — | Valor em R$ de um dia de DSR. Só é usado com o 8794 "em valor". Aceita `62,50`, `R$ 62,50` ou número. |
+
+`banco_horas` e `registra_ponto` aceitam `sim`, `não`/`nao`, `s`, `n`, `1`, `0`, `true`, `false` e `x`
+(sem diferenciar maiúsculas nem acento). Qualquer outro valor interrompe o fechamento com uma mensagem
+que cita o arquivo, a linha e a coluna.
+
+## Banco de horas: para onde vão as horas do relógio
+
+Quem tem `banco_horas = sim` tem as horas apuradas pelo relógio **levadas ao banco, não à folha**
+(senão a hora extra seria paga no 0150/0200 *e* contada no saldo do 0999). Na Relação de Valores:
+
+- 0150 = 0 e, conforme as premissas abaixo, 0200 = 0 e 8069 = 0;
+- 0999 continua vindo das fontes de sempre (export do Secullum / planilha do Adriano) — o cálculo do saldo não mudou;
+- falta de **dia inteiro** não é afetada (8792, COPR, VA e DSR funcionam como sempre);
+- a aba "Conferência RH" mostra o que foi desviado: "Banco de horas" (Sim/Não), "HE 50% enviada ao
+  banco", "HE 100% enviada ao banco" e "Atraso/falta parcial enviados ao banco";
+- o bloco "nosso x Secullum" continua comparando os valores **do relógio**, antes do desvio ao banco.
+
+Duas constantes em `pipeline.py` guardam as **premissas ainda não confirmadas com a cliente**:
+`BANCO_ABSORVE_HE_100 = True` (domingo/feriado também vão ao banco) e
+`BANCO_ABSORVE_ATRASO_E_FALTA_PARCIAL = True` (atraso e falta parcial debitam o banco em vez de
+serem descontados no 8069). Mude para `False` se a resposta for outra.
+
+**Quem não bate ponto** (`registra_ponto = não`, caso do Adriano, que anota as horas numa planilha
+semanal): sai da apuração do ponto — sem linhas diárias, sem exceções, sem faltas. Os códigos vindos do
+relógio ficam 0 e o "Prêmio COPR" mostra **"Conferir"** (e não Perde/Não Perde, já que não há ponto
+para decidir), sem o destaque vermelho de perda.
+
+**Checagens de consistência** (checagem pré-voo): se o export do Secullum ou a planilha do Adriano trouxer
+saldo para alguém que **não** está com `banco_horas = sim` no cadastro, o fechamento é interrompido
+(a hora extra seria paga duas vezes). Linha com saldo 0 passa. No sentido inverso,
+`avisos_banco_horas()` devolve **avisos** (não erros) para quem está marcado no banco mas não tem saldo
+em nenhum arquivo enviado — o 0999 dele sairia 0; o app web mostra na seção 2 e o app desktop na
+mensagem final.
+
+O saldo lido do Secullum e as colunas `horas_extras`, `horas_debito` e `saldo_anterior` da planilha do
+Adriano aceitam decimal (vírgula ou ponto), `hh:mm` (inclusive negativo, `-05:10`) e células de hora do Excel;
+tudo vira horas decimais com 2 casas. Valor inválido interrompe com arquivo e linha.
+
+## DSR (cód. 8794)
+
+`consolidar_mes()` conta `semanas_perde_dsr`: semanas ISO com ao menos uma falta de dia inteiro
+**injustificada** (falta parcial não conta). A **unidade** em que o 8794 é lançado ainda não está
+confirmada com a contabilidade, então é uma configuração explícita (`unidade_dsr` em
+`rodada_2_gerar_relacao_de_valores`; padrão `UNIDADE_DSR_PADRAO = "dias"`):
+
+- `"dias"` (padrão): 8794 = número de DSR perdidos. Não precisa de dado de salário.
+- `"valor"`: 8794 = DSR perdidos × valor do dia de DSR, lido da coluna `valor_dia_dsr` do cadastro (o
+  dicionário `valor_dia_dsr_por_pis`, se passado, sobrepõe a coluna). Se alguém que perdeu DSR não tiver
+  valor, o fechamento é interrompido listando quem — nunca sai 0 em silêncio. A aba "Conferência RH" ganha
+  a coluna "Valor do dia de DSR".
+
+No app web escolha em "5. Gerar o fechamento final"; o app desktop usa o padrão. O cabeçalho "Desconto DSR
+(8794)" não muda: o layout é da contabilidade.
+
+**Limitação conhecida (não resolvida):** uma semana ISO que atravessa dois períodos de fechamento (o período
+vai do dia 26 ao 25) pode ter uma falta injustificada de cada lado, e cada fechamento a contaria — o mesmo
+DSR seria descontado duas vezes. Hoje cada fechamento enxerga só o seu período.
+
 ## 4. Banco de horas manual do Adriano (sem corromper os demais)
 
 `banco_horas.py` trata as duas fontes como **exceções isoladas**:
@@ -375,9 +444,10 @@ para validar o ambiente antes de apontar para os arquivos reais.
    `ValueError` explícitos em `pipeline.py`/`banco_horas.py` avisam
    imediatamente se um nome não bater, em vez de gerar um número errado
    silenciosamente.
-3. Definir a fonte do valor de um dia de DSR por colaborador
-   (`valor_dia_dsr_por_pis` em `pipeline.py`) — isso normalmente vem do
-   sistema de folha em si, fora do escopo do ponto.
+3. Confirmar a unidade do 8794 (dias ou R$). Se for em R$, definir a fonte do valor do
+   dia de DSR por colaborador (coluna `valor_dia_dsr` do cadastro ou
+   `valor_dia_dsr_por_pis` em `pipeline.py`) — isso normalmente vem do sistema de
+   folha em si, fora do escopo do ponto. Ver "DSR (cód. 8794)".
 4. ~~Regra de feriados~~ — feita: ver "Calendário de feriados". Falta só a
    cliente confirmar se a empresa concede Carnaval/Corpus Christi/vésperas e
    o que diz a convenção coletiva sobre feriados.

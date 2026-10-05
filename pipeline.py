@@ -30,6 +30,7 @@ from datetime import date, time
 from pathlib import Path
 from typing import Mapping
 
+import numpy as np
 import pandas as pd
 
 from afd_parser import agrupar_batidas_por_dia
@@ -44,6 +45,8 @@ from validacao import (
     validar_pis_existem,
     normalizar_identificador_colaborador,
     canonicalizar_pis,
+    converter_valor_monetario,
+    ler_sim_nao,
     ArquivoInvalidoError,
 )
 from leitura_arquivos import ler_arquivo_generico
@@ -75,6 +78,29 @@ COLUNAS_OBRIGATORIAS_CADASTRO = [
     "entrada", "saida_almoco", "retorno_almoco", "saida", "dias_trabalho",
 ]
 
+# Colunas OPCIONAIS do cadastro (cadastro antigo sem elas segue como sempre):
+#   banco_horas     (padrao nao) - colaborador no banco de horas;
+#   registra_ponto  (padrao sim) - colaborador usa o relogio de ponto;
+#   valor_dia_dsr   (sem padrao) - valor em R$ de um dia de DSR, so' usado com unidade_dsr="valor".
+COL_BANCO_HORAS = "banco_horas"
+COL_REGISTRA_PONTO = "registra_ponto"
+COL_VALOR_DIA_DSR = "valor_dia_dsr"
+
+# --- PREMISSAS A CONFIRMAR COM A CLIENTE (ver README, "Banco de horas") -------
+# Quem esta no banco de horas tem as horas do relogio levadas ao banco, nao a folha.
+# True = tambem as horas de domingo/feriado (0200) vao para o banco, nao so' a HE 50%.
+BANCO_ABSORVE_HE_100 = True
+# True = atraso e falta parcial (8069) sao debitados do banco, em vez de descontados na folha.
+BANCO_ABSORVE_ATRASO_E_FALTA_PARCIAL = True
+
+# Como o codigo 8794 e' lancado: "dias" (quantidade de DSR perdidos) ou "valor" (R$).
+# A unidade NAO esta confirmada com a contabilidade - por isso e' uma configuracao explicita.
+UNIDADES_DSR = ("dias", "valor")
+UNIDADE_DSR_PADRAO = "dias"
+
+# Terceiro estado do "Premio COPR" para quem nao registra ponto: nao da' para dizer Perde/Nao Perde.
+COPR_CONFERIR = "Conferir"
+
 
 def carregar_cadastro_colaboradores(caminho: str) -> pd.DataFrame:
     """
@@ -86,6 +112,11 @@ def carregar_cadastro_colaboradores(caminho: str) -> pd.DataFrame:
 
     Levanta `ArquivoInvalidoError` (com o caminho e a(s) coluna(s) que
     faltam) se o arquivo nao tiver todas as colunas obrigatorias.
+
+    Colunas opcionais: `banco_horas` (sim/nao, padrao nao), `registra_ponto`
+    (sim/nao, padrao sim) e `valor_dia_dsr` (R$). `banco_horas` e `registra_ponto`
+    saem SEMPRE como booleanos, mesmo que o arquivo nao tenha a coluna;
+    `valor_dia_dsr` so' existe no resultado se o arquivo a tiver.
     """
     df = ler_arquivo_generico(caminho, "Cadastro de Colaboradores")
     verificar_colunas(df, COLUNAS_OBRIGATORIAS_CADASTRO, "Cadastro de Colaboradores", caminho)
@@ -94,7 +125,37 @@ def carregar_cadastro_colaboradores(caminho: str) -> pd.DataFrame:
     # lados (cadastro E afd_parser) ao mesmo formato de 11 digitos, nenhuma
     # batida do AFD real bateria com ninguem aqui.
     df["pis"] = df["pis"].map(canonicalizar_pis)
+    df[COL_BANCO_HORAS] = _ler_coluna_sim_nao(df, COL_BANCO_HORAS, False, caminho)
+    df[COL_REGISTRA_PONTO] = _ler_coluna_sim_nao(df, COL_REGISTRA_PONTO, True, caminho)
+    if COL_VALOR_DIA_DSR in df.columns:
+        df[COL_VALOR_DIA_DSR] = pd.Series(
+            [
+                converter_valor_monetario(v, f"Cadastro de Colaboradores ('{caminho}'), linha {i + 2}", COL_VALOR_DIA_DSR)
+                for i, v in df[COL_VALOR_DIA_DSR].items()
+            ],
+            index=df.index, dtype=float,
+        )
     return df
+
+
+def _ler_coluna_sim_nao(df: pd.DataFrame, coluna: str, padrao: bool, caminho: str) -> pd.Series:
+    """Coluna sim/nao do cadastro como booleanos; coluna ausente ou celula vazia = `padrao`."""
+    if coluna not in df.columns:
+        return pd.Series(padrao, index=df.index, dtype=bool)
+    return pd.Series(
+        [
+            ler_sim_nao(v, f"Cadastro de Colaboradores ('{caminho}'), linha {i + 2}", coluna, padrao)
+            for i, v in df[coluna].items()
+        ],
+        index=df.index, dtype=bool,
+    )
+
+
+def _flag_cadastro(df_cadastro: pd.DataFrame, coluna: str, padrao: bool) -> pd.Series:
+    """Booleano por colaborador; cadastro montado sem a coluna (ou sem o valor) usa o padrao."""
+    if coluna not in df_cadastro.columns:
+        return pd.Series(padrao, index=df_cadastro.index, dtype=bool)
+    return df_cadastro[coluna].fillna(padrao).astype(bool)
 
 
 def montar_jornadas(df_cadastro: pd.DataFrame) -> dict[str, Jornada]:
@@ -216,6 +277,59 @@ def executar_checagens_preflight(
             df_banco_adriano["pis"], pis_validos, "Planilha semanal do Adriano", caminho_banco_adriano
         )
 
+    _validar_banco_so_para_quem_esta_no_banco(
+        df_cadastro, df_banco_secullum, "Banco de Horas do Secullum", caminho_banco_secullum
+    )
+    _validar_banco_so_para_quem_esta_no_banco(
+        df_cadastro, df_banco_adriano, "Planilha semanal do Adriano", caminho_banco_adriano
+    )
+
+
+def _validar_banco_so_para_quem_esta_no_banco(
+    df_cadastro: pd.DataFrame, df_banco: pd.DataFrame | None, nome_arquivo: str, caminho: str,
+) -> None:
+    """
+    Saldo de banco de horas para quem NAO esta marcado `banco_horas = sim` no cadastro:
+    as horas extras sairiam na folha (0150/0200) e tambem no banco (0999), pagas duas
+    vezes. Linha com saldo 0 nao paga nada duas vezes (export que lista todo mundo), entao passa.
+    """
+    if df_banco is None or df_banco.empty:
+        return
+    no_banco = set(df_cadastro.loc[_flag_cadastro(df_cadastro, COL_BANCO_HORAS, False), "pis"])
+    com_saldo = df_banco.loc[df_banco["saldo_banco_horas"].fillna(0) != 0, "pis"]
+    fora = sorted({str(p).strip() for p in com_saldo} - no_banco)
+    if fora:
+        nomes = df_cadastro.drop_duplicates("pis").set_index("pis")["nome"]
+        quem = ", ".join(f"{nomes.get(p, p)} (PIS {p})" for p in fora)
+        raise ArquivoInvalidoError(
+            f"O arquivo de {nome_arquivo} ('{caminho}') traz saldo de banco de horas para quem não está "
+            f"marcado como banco de horas no Cadastro de Colaboradores: {quem}.\n"
+            "Com isso as horas extras dessa pessoa seriam pagas na folha (0150/0200) E também contadas "
+            "no banco de horas (0999).\n"
+            "Se ela realmente está no banco de horas, preencha 'sim' na coluna 'banco_horas' do cadastro; "
+            "senão, tire o saldo dela desse arquivo."
+        )
+
+
+def avisos_banco_horas(
+    df_cadastro: pd.DataFrame,
+    df_banco_secullum: pd.DataFrame | None = None,
+    df_banco_adriano: pd.DataFrame | None = None,
+) -> list[str]:
+    """
+    AVISOS (nao erros): colaboradores marcados `banco_horas = sim` sem nenhuma linha de saldo
+    nos arquivos enviados - o 0999 deles sairia 0 (e as horas do relogio nao vao para a folha).
+    """
+    partes = [d["pis"] for d in (df_banco_secullum, df_banco_adriano) if d is not None and not d.empty]
+    com_saldo = {str(p).strip() for parte in partes for p in parte}
+    no_banco = df_cadastro[_flag_cadastro(df_cadastro, COL_BANCO_HORAS, False)]
+    return [
+        f"{nome} está marcado(a) como banco de horas, mas nenhum arquivo de banco de horas traz o saldo "
+        "dessa pessoa: o Banco de Horas (0999) dela sairá 0."
+        for pis, nome in zip(no_banco["pis"], no_banco["nome"])
+        if str(pis).strip() not in com_saldo
+    ]
+
 
 def rodada_1_gerar_fila_de_excecoes(
     caminho_ponto: str,
@@ -247,7 +361,8 @@ def rodada_1_gerar_fila_de_excecoes(
         print(f"[aviso] {len(resultado_ponto.erros_leitura)} aviso(s) na leitura do ponto - ver log.")
 
     batidas_por_dia = agrupar_batidas_por_dia(resultado_ponto.batidas)
-    jornadas = montar_jornadas(df_cadastro)
+    # Quem nao registra ponto (registra_ponto = nao) fica fora da apuracao: sem dia, sem excecao, sem falta.
+    jornadas = montar_jornadas(df_cadastro[_flag_cadastro(df_cadastro, COL_REGISTRA_PONTO, True)])
     apuracao = apurar_periodo(batidas_por_dia, jornadas, data_inicio, data_fim, feriados=feriados)
     # Totais impressos pelo proprio Secullum (so' no Cartao Ponto em PDF): viajam
     # junto da apuracao para a conferencia da rodada 2, sem mudar o retorno.
@@ -412,8 +527,24 @@ def rodada_2_gerar_relacao_de_valores(
     decisoes_rh: pd.DataFrame | None,
     competencia: str,
     valor_dia_dsr_por_pis: dict[str, float] | None = None,
+    unidade_dsr: str = UNIDADE_DSR_PADRAO,
 ) -> pd.DataFrame:
-    """Gera a tabela final no layout exigido pela contabilidade, uma linha por colaborador."""
+    """
+    Gera a tabela final no layout exigido pela contabilidade, uma linha por colaborador.
+
+    Banco de horas: quem tem `banco_horas = sim` no cadastro tem as horas do relogio
+    levadas ao banco, nao a folha - 0150 = 0 e, conforme as constantes `BANCO_ABSORVE_*`,
+    0200 e 8069 tambem. O 0999 continua vindo de `df_banco_horas`. Falta de dia inteiro
+    (8792, COPR, VA, DSR) nao muda. Quem tem `registra_ponto = nao` nao tem apuracao: zero
+    nos codigos do relogio e "Conferir" no premio COPR.
+
+    8794 (`unidade_dsr`): "dias" = DSR perdidos (semanas com falta inteira injustificada);
+    "valor" = semanas x valor do dia de DSR (coluna `valor_dia_dsr` do cadastro; o dict
+    `valor_dia_dsr_por_pis` sobrepoe a coluna). Em "valor", faltar o valor de quem perdeu
+    DSR levanta `ArquivoInvalidoError`.
+    """
+    if unidade_dsr not in UNIDADES_DSR:
+        raise ValueError(f"unidade_dsr deve ser um destes: {', '.join(UNIDADES_DSR)} (recebido: {unidade_dsr!r})")
     resumo_mes = consolidar_mes(apuracao_diaria, decisoes_rh)
 
     df = df_cadastro.merge(resumo_mes, on="pis", how="left")
@@ -426,10 +557,16 @@ def rodada_2_gerar_relacao_de_valores(
         if col in df.columns:
             df[col] = df[col].fillna(0)
 
-    valor_dia_dsr_por_pis = valor_dia_dsr_por_pis or {}
-    df["valor_desconto_dsr"] = df.apply(
-        lambda r: round(r["semanas_perde_dsr"] * valor_dia_dsr_por_pis.get(r["pis"], 0.0), 2), axis=1
-    )
+    df["valor_desconto_dsr"], valor_dia_dsr = _calcular_8794(df, unidade_dsr, valor_dia_dsr_por_pis)
+
+    # Banco de horas / sem relogio. O df continua com os valores DO RELOGIO (a conferencia
+    # com o Secullum, la' embaixo, compara com eles); so' a saida roteia para o banco.
+    no_banco = _flag_cadastro(df, COL_BANCO_HORAS, False)
+    registra_ponto = _flag_cadastro(df, COL_REGISTRA_PONTO, True)
+    he50_banco = df["horas_extra_50"].where(no_banco, 0.0)
+    he100_banco = df["horas_extra_100"].where(no_banco & BANCO_ABSORVE_HE_100, 0.0)
+    atraso_falta_banco = df["horas_falta"].where(no_banco & BANCO_ABSORVE_ATRASO_E_FALTA_PARCIAL, 0.0)
+    perde_copr = df["perde_copr"].fillna(False).astype(object).where(registra_ponto, COPR_CONFERIR)
 
     saida = pd.DataFrame({
         "codigo_empresa": df["codigo_empresa"],
@@ -437,9 +574,9 @@ def rodada_2_gerar_relacao_de_valores(
         "competencia": competencia,
         "codigo_folha": df["matricula"],
         "nome_colaborador": df["nome"],
-        COD_HE_50: df["horas_extra_50"],
-        COD_HE_100: df["horas_extra_100"],
-        COD_HORAS_FALTA: df["horas_falta"],
+        COD_HE_50: df["horas_extra_50"] - he50_banco,
+        COD_HE_100: df["horas_extra_100"] - he100_banco,
+        COD_HORAS_FALTA: df["horas_falta"] - atraso_falta_banco,
         COD_DIAS_FALTA: df["dias_falta"],
         COD_DESCONTO_DSR: df["valor_desconto_dsr"],
         COD_ADIANTAMENTO_CONSIGNADO: df["valor_consignado"],
@@ -449,7 +586,11 @@ def rodada_2_gerar_relacao_de_valores(
         # prefixo "_" de proposito, para o exportador saber separa-las
         # automaticamente na aba "Conferência RH" e nunca vazarem para a
         # aba "Contabilidade":
-        "_perde_premio_copr": df["perde_copr"].fillna(False),
+        "_perde_premio_copr": perde_copr,
+        "_banco_horas": no_banco.map({True: "Sim", False: "Não"}),
+        "_he50_banco": he50_banco,
+        "_he100_banco": he100_banco,
+        "_atraso_falta_parcial_banco": atraso_falta_banco,
         "_dias_falta_total": df["dias_falta"],
         "_dias_falta_justificada": df["dias_falta_justificada"],
         "_dias_falta_injustificada": df["dias_falta_injustificada"],
@@ -459,11 +600,39 @@ def rodada_2_gerar_relacao_de_valores(
         "_dias_desconto_va": df["dias_desconto_va"],
         "_semanas_perde_dsr": df["semanas_perde_dsr"],
     })
+    if valor_dia_dsr is not None:
+        saida["_valor_dia_dsr"] = valor_dia_dsr
 
     totais_secullum = apuracao_diaria.attrs.get("totais_secullum")
     if totais_secullum is not None:
         saida = saida.join(_conferencia_com_secullum(df, totais_secullum))
     return saida
+
+
+def _calcular_8794(
+    df: pd.DataFrame, unidade_dsr: str, valor_dia_dsr_por_pis: Mapping[str, float] | None,
+) -> tuple[pd.Series, pd.Series | None]:
+    """
+    (valor do 8794, valor do dia de DSR - so' em "valor"). Em "dias" nao precisa de dado
+    de salario. Em "valor", o dia vem do dict (prioridade) ou da coluna `valor_dia_dsr` do
+    cadastro, e quem perdeu DSR sem valor derruba o fechamento: nunca vira 0 em silencio.
+    """
+    semanas = df["semanas_perde_dsr"]
+    if unidade_dsr == "dias":
+        return semanas.astype(int), None
+
+    valor_dia = df[COL_VALOR_DIA_DSR].astype(float) if COL_VALOR_DIA_DSR in df.columns else pd.Series(np.nan, index=df.index)
+    if valor_dia_dsr_por_pis:
+        valor_dia = df["pis"].map(valor_dia_dsr_por_pis).astype(float).combine_first(valor_dia)
+    sem_valor = (semanas > 0) & valor_dia.isna()
+    if sem_valor.any():
+        quem = ", ".join(f"{n} (matrícula {m})" for n, m in zip(df.loc[sem_valor, "nome"], df.loc[sem_valor, "matricula"]))
+        raise ArquivoInvalidoError(
+            "O desconto de DSR (8794) foi pedido em valor (R$), mas falta o valor do dia de DSR de quem "
+            f"perdeu DSR no período: {quem}.\n"
+            f"Preencha a coluna '{COL_VALOR_DIA_DSR}' no Cadastro de Colaboradores, ou lance o 8794 em dias."
+        )
+    return (semanas * valor_dia.fillna(0.0)).round(2), valor_dia
 
 
 def _conferencia_com_secullum(df: pd.DataFrame, totais_secullum: pd.DataFrame) -> pd.DataFrame:
@@ -551,7 +720,10 @@ _CABECALHOS_CONTABIL = {
 _COLUNAS_AUX = [
     "_perde_premio_copr", "_dias_falta_total", "_dias_falta_justificada", "_dias_falta_injustificada",
     "_dias_falta_parcial", "_horas_falta_parcial", "_atraso_horas", "_dias_desconto_va", "_semanas_perde_dsr",
+    "_banco_horas", "_he50_banco", "_he100_banco", "_atraso_falta_parcial_banco",
 ]
+# So' existe quando o 8794 foi lancado em valor (R$).
+_COLUNAS_AUX_DSR_VALOR = ["_valor_dia_dsr"]
 # Bloco "Nosso x Secullum": so' existe quando o ponto veio do Cartao Ponto em PDF.
 _COLUNAS_CONFERENCIA_SECULLUM = [
     "_sec_dias_falta", "_dif_dias_falta", "_sec_horas_falta", "_dif_horas_falta",
@@ -562,6 +734,9 @@ _CABECALHOS_AUX = {
     "_dias_falta_justificada": "Dias Falta Justificada", "_dias_falta_injustificada": "Dias Falta Injustificada",
     "_dias_falta_parcial": "Dias Falta Parcial", "_horas_falta_parcial": "Horas Falta Parcial",
     "_atraso_horas": "Horas de Atraso",
+    "_banco_horas": "Banco de horas", "_he50_banco": "HE 50% enviada ao banco",
+    "_he100_banco": "HE 100% enviada ao banco", "_atraso_falta_parcial_banco": "Atraso/falta parcial enviados ao banco",
+    "_valor_dia_dsr": "Valor do dia de DSR",
     "_dias_desconto_va": "Dias Desconto VA", "_semanas_perde_dsr": "Semanas c/ Perda de DSR",
     "_sec_dias_falta": "Dias Falta (Secullum)", "_dif_dias_falta": "Dif. Dias Falta (nosso - Secullum)",
     "_sec_horas_falta": "Horas Falta (Secullum)", "_dif_horas_falta": "Dif. Horas Falta",
@@ -573,6 +748,7 @@ _CABECALHOS_AUX = {
 _COLUNAS_DECIMAIS = {
     COD_HE_50, COD_HE_100, COD_HORAS_FALTA, COD_DESCONTO_DSR, COD_ADIANTAMENTO_CONSIGNADO, COD_OUTROS_BANCO_HORAS,
     "_horas_falta_parcial", "_atraso_horas", "_sec_horas_falta", "_dif_horas_falta",
+    "_he50_banco", "_he100_banco", "_atraso_falta_parcial_banco", "_valor_dia_dsr",
     "_sec_he50", "_dif_he50", "_sec_he100", "_dif_he100",
 }
 # Colunas de quantidade inteira (ainda assim formatadas com precisao explicita)
@@ -581,7 +757,12 @@ _COLUNAS_INTEIRAS = {
     "_dias_falta_parcial", "_dias_desconto_va", "_semanas_perde_dsr", "_sec_dias_falta", "_dif_dias_falta",
 }
 # Colunas centralizadas (codigos, matricula, competencia)
-_COLUNAS_CENTRALIZADAS = {"codigo_empresa", "competencia", "codigo_folha", "_perde_premio_copr"}
+_COLUNAS_CENTRALIZADAS = {"codigo_empresa", "competencia", "codigo_folha", "_perde_premio_copr", "_banco_horas"}
+
+
+def _perde_copr(valor) -> bool:
+    """So' bool de verdade e' perda: "Conferir" (sem ponto) e' texto e nao deve ser destacado."""
+    return isinstance(valor, (bool, np.bool_)) and bool(valor)
 
 
 def _escrever_workbook_formatado(grupo: pd.DataFrame, caminho: Path) -> None:
@@ -624,7 +805,7 @@ def _escrever_workbook_formatado(grupo: pd.DataFrame, caminho: Path) -> None:
             for c in colunas:
                 v = linha[c]
                 if c == "_perde_premio_copr":
-                    v = "Perde" if bool(v) else "Não Perde"
+                    v = COPR_CONFERIR if v == COPR_CONFERIR else ("Perde" if bool(v) else "Não Perde")
                 elif pd.isna(v):
                     v = None  # celula em branco (ex.: colaborador sem linha de TOTAIS no Secullum)
                 valores.append(v)
@@ -634,7 +815,7 @@ def _escrever_workbook_formatado(grupo: pd.DataFrame, caminho: Path) -> None:
         for i in range(2, n_linhas + 2):
             linha_df = grupo.iloc[i - 2]
             destacar = com_alerta and (
-                bool(linha_df.get("_perde_premio_copr", False))
+                _perde_copr(linha_df.get("_perde_premio_copr", False))
                 or int(linha_df.get("_dias_falta_total", 0) or 0) >= LIMITE_FALTAS_ALTO
             )
             for j, c in enumerate(colunas, start=1):
@@ -662,7 +843,11 @@ def _escrever_workbook_formatado(grupo: pd.DataFrame, caminho: Path) -> None:
     escrever_aba(ws_contabil, _COLUNAS_CONTABIL, _CABECALHOS_CONTABIL, com_alerta=False)
 
     ws_rh = wb.create_sheet("Conferência RH")
-    colunas_rh = _COLUNAS_CONTABIL + _COLUNAS_AUX + [c for c in _COLUNAS_CONFERENCIA_SECULLUM if c in grupo.columns]
+    colunas_rh = (
+        _COLUNAS_CONTABIL + _COLUNAS_AUX
+        + [c for c in _COLUNAS_AUX_DSR_VALOR if c in grupo.columns]
+        + [c for c in _COLUNAS_CONFERENCIA_SECULLUM if c in grupo.columns]
+    )
     cabecalhos_rh = {**_CABECALHOS_CONTABIL, **_CABECALHOS_AUX}
     escrever_aba(ws_rh, colunas_rh, cabecalhos_rh, com_alerta=True)
 

@@ -30,11 +30,14 @@ import streamlit as st
 from pipeline import (
     carregar_cadastro_colaboradores,
     carregar_consignados,
+    avisos_banco_horas,
     executar_checagens_preflight,
     rodada_1_gerar_fila_de_excecoes,
     rodada_2_gerar_relacao_de_valores,
     exportar_por_empresa,
     COLUNAS_OBRIGATORIAS_CADASTRO,
+    UNIDADE_DSR_PADRAO,
+    UNIDADES_DSR,
 )
 import db_sessao
 from feriados import avisos_de_cobertura, carregar_feriados, descrever_feriados
@@ -325,7 +328,7 @@ if arquivos_subidos:
             st.session_state.pis_adriano = pis_adriano.strip()
             # limpa qualquer processamento anterior, já que os arquivos mudaram
             for chave in ("cadastro_df", "preflight_ok", "apuracao_diaria", "fila_tabela", "arquivos_finais",
-                          "feriados_periodo", "avisos_feriados"):
+                          "feriados_periodo", "avisos_feriados", "avisos_banco_horas"):
                 st.session_state.pop(chave, None)
             st.success("Arquivos confirmados. Continue na seção 2 abaixo.")
 
@@ -373,7 +376,13 @@ if st.session_state.get("arquivos_confirmados"):
             st.session_state.banco_horas_df = consolidar_banco_horas(
                 cadastro["pis"].tolist(), banco_secullum, banco_adriano
             )
+            st.session_state.avisos_banco_horas = avisos_banco_horas(cadastro, banco_secullum, banco_adriano)
             st.success("✅ Checagem pré-voo concluída — todos os dados batem. Pode continuar.")
+
+    # Avisos (nao impedem de continuar): ficam na tela depois do rerun, por isso saem do session_state.
+    if st.session_state.get("preflight_ok"):
+        for aviso in st.session_state.get("avisos_banco_horas", []):
+            st.warning(aviso)
 
 # ===========================================================================
 # SEÇÃO 3 — Processar o ponto (etapa pesada, só roda sob demanda)
@@ -546,6 +555,23 @@ if "fila_tabela" in st.session_state:
 if "apuracao_diaria" in st.session_state:
     st.header("5. Gerar o fechamento final")
 
+    ROTULOS_UNIDADE_DSR = {
+        "dias": "Em dias de DSR (padrão)",
+        "valor": "Em valor (R$) - exige a coluna valor_dia_dsr no cadastro",
+    }
+    unidade_dsr = st.radio(
+        "Como lançar o Desconto DSR (8794)?",
+        options=list(UNIDADES_DSR),
+        index=UNIDADES_DSR.index(UNIDADE_DSR_PADRAO),
+        format_func=ROTULOS_UNIDADE_DSR.get,
+        key="unidade_dsr",
+        help=(
+            "Em dias: o 8794 sai com a quantidade de DSR perdidos (uma por semana com falta de dia inteiro "
+            "sem justificativa). Em valor: essa quantidade vezes o valor do dia de DSR de cada colaborador, "
+            "lido da coluna valor_dia_dsr do cadastro. Confirme com a contabilidade qual unidade ela espera."
+        ),
+    )
+
     if st.button("📊 Gerar Fechamento Final", type="primary"):
         with st.spinner("Consolidando tudo e montando as planilhas..."):
             fila = st.session_state.fila_tabela
@@ -559,14 +585,19 @@ if "apuracao_diaria" in st.session_state:
             else:
                 decisoes = None
 
-            relacao = rodada_2_gerar_relacao_de_valores(
-                st.session_state.apuracao_diaria,
-                st.session_state.cadastro_df,
-                st.session_state.consignados_df,
-                st.session_state.banco_horas_df,
-                decisoes,
-                st.session_state.competencia_final,
-            )
+            try:
+                relacao = rodada_2_gerar_relacao_de_valores(
+                    st.session_state.apuracao_diaria,
+                    st.session_state.cadastro_df,
+                    st.session_state.consignados_df,
+                    st.session_state.banco_horas_df,
+                    decisoes,
+                    st.session_state.competencia_final,
+                    unidade_dsr=unidade_dsr,
+                )
+            except ArquivoInvalidoError as e:
+                st.error(f"**Não foi possível gerar o fechamento:**\n\n{e}")
+                st.stop()
             pasta_saida = PASTA_TEMP / "saida"
             if pasta_saida.exists():
                 shutil.rmtree(pasta_saida)

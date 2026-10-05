@@ -24,15 +24,27 @@ from __future__ import annotations
 
 import pandas as pd
 
-from validacao import verificar_colunas, normalizar_identificador_colaborador, ArquivoInvalidoError
+from validacao import (
+    verificar_colunas, normalizar_identificador_colaborador, converter_horas_decimais, ArquivoInvalidoError,
+)
 from leitura_arquivos import ler_arquivo_generico
+
+
+def _coluna_em_horas(serie: pd.Series, nome_arquivo: str, caminho: str, coluna: str) -> pd.Series:
+    """Converte a coluna inteira para horas decimais; um valor invalido aponta a linha da planilha."""
+    return pd.Series(
+        [converter_horas_decimais(v, f"{nome_arquivo} ('{caminho}'), linha {i + 2}", coluna) for i, v in serie.items()],
+        index=serie.index, dtype=float,
+    )
 
 
 def ler_banco_horas_secullum(caminho_export: str, cadastro: pd.DataFrame | None = None) -> pd.DataFrame:
     """
     Le o relatorio de banco de horas exportado do proprio Secullum
     (cobre o caso do "Sidney"). Espera colunas Matricula/PIS e Saldo
-    (em horas, podendo ser negativo). Ajuste os nomes de coluna abaixo
+    (em horas, podendo ser negativo). O saldo pode vir em decimal (virgula
+    ou ponto), em "hh:mm" (inclusive "-05:10") ou em celula de hora do Excel
+    - tudo vira horas decimais com 2 casas. Ajuste os nomes de coluna abaixo
     para bater com o export real do seu Secullum.
 
     Passe `cadastro` sempre que possível: o Secullum costuma identificar
@@ -50,6 +62,9 @@ def ler_banco_horas_secullum(caminho_export: str, cadastro: pd.DataFrame | None 
         )
     out = df[[coluna_pis, coluna_saldo]].rename(columns={coluna_pis: "pis", coluna_saldo: "saldo_banco_horas"})
     out["pis"] = out["pis"].astype(str).str.strip()
+    out["saldo_banco_horas"] = _coluna_em_horas(
+        out["saldo_banco_horas"], "Banco de Horas do Secullum", caminho_export, coluna_saldo
+    )
     if cadastro is not None:
         out = normalizar_identificador_colaborador(out, "pis", cadastro, "Banco de Horas do Secullum", caminho_export)
     out["fonte"] = "secullum_sidney"
@@ -82,13 +97,18 @@ def ler_banco_horas_adriano(
     df = ler_arquivo_generico(caminho_planilha, "Planilha semanal do Adriano", sheet_name=sheet_name)
     verificar_colunas(df, ["horas_extras", "horas_debito"], "Planilha semanal do Adriano", caminho_planilha)
 
+    nome = "Planilha semanal do Adriano"
     saldo_anterior = 0.0
     if "saldo_anterior" in df.columns and not df["saldo_anterior"].dropna().empty:
         # saldo acumulado do mes anterior fica, por convencao, na 1a linha
-        saldo_anterior = float(df["saldo_anterior"].dropna().iloc[0])
+        primeira = df["saldo_anterior"].dropna().index[0]
+        saldo_anterior = converter_horas_decimais(
+            df.at[primeira, "saldo_anterior"], f"{nome} ('{caminho_planilha}'), linha {primeira + 2}", "saldo_anterior"
+        )
 
-    saldo_periodo = (df["horas_extras"].fillna(0) - df["horas_debito"].fillna(0)).sum()
-    saldo_total = round(saldo_anterior + float(saldo_periodo), 2)
+    horas_extras = _coluna_em_horas(df["horas_extras"], nome, caminho_planilha, "horas_extras")
+    horas_debito = _coluna_em_horas(df["horas_debito"], nome, caminho_planilha, "horas_debito")
+    saldo_total = round(saldo_anterior + float((horas_extras - horas_debito).sum()), 2)
 
     resultado = pd.DataFrame([{
         "pis": str(pis_adriano).strip(),
