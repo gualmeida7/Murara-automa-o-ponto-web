@@ -3,3 +3,4 @@ saida/
 dados/
 fechamento_folha.db
 fechamento_folha.log
+__pycache__/

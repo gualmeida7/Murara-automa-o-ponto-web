@@ -733,17 +733,18 @@ if "fila_tabela" in st.session_state:
                 st.session_state.pop(chave_anterior, None)
             st.session_state["_chave_editor_ativa"] = chave_editor
 
-            colunas_exibidas = ["nome_colaborador", "razao_social", "data_exibicao", "situacao", "motivo_validacao", "classificacao", "observacao"]
+            # "data" (datetime) em vez de "data_exibicao" (texto dd/mm/aaaa): o texto ordenava por dia, não por mês
+            colunas_exibidas = ["nome_colaborador", "razao_social", "data", "situacao", "motivo_validacao", "classificacao", "observacao"]
             tabela_editada = st.data_editor(
                 fila_filtrada[colunas_exibidas].style.map(estilo_situacao, subset=["situacao"]),
                 key=chave_editor,
                 hide_index=True,
                 width="stretch",
-                disabled=["nome_colaborador", "razao_social", "data_exibicao", "situacao", "motivo_validacao"],
+                disabled=["nome_colaborador", "razao_social", "data", "situacao", "motivo_validacao"],
                 column_config={
                     "nome_colaborador": st.column_config.TextColumn("Colaborador"),
                     "razao_social": st.column_config.TextColumn("Empresa"),
-                    "data_exibicao": st.column_config.TextColumn("Data"),
+                    "data": st.column_config.DateColumn("Data", format="DD/MM/YYYY"),
                     "situacao": st.column_config.TextColumn("Situação"),
                     "motivo_validacao": st.column_config.TextColumn("Motivo"),
                     "classificacao": st.column_config.SelectboxColumn("Decisão", options=OPCOES_CLASSIFICACAO, required=False),
