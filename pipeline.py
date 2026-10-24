@@ -25,6 +25,7 @@ Duas rodadas por fechamento:
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from datetime import date, time
 from pathlib import Path
@@ -62,6 +63,10 @@ COD_DIAS_FALTA = "8792"
 COD_DESCONTO_DSR = "8794"
 COD_ADIANTAMENTO_CONSIGNADO = "0981"
 COD_OUTROS_BANCO_HORAS = "0999"
+
+# O escritorio desconta o consignado direto do extrato (confirmado pela cliente): o 0981 fica
+# vazio e o extrato e' opcional. True = volta a preencher o 0981 com o extrato enviado.
+PREENCHER_CONSIGNADO = False
 
 COLUNAS_RELACAO_VALORES = [
     "codigo_empresa", "razao_social", "competencia",
@@ -522,7 +527,7 @@ def exportar_fila_validacao_rh(fila: pd.DataFrame, df_cadastro: pd.DataFrame, ca
 def rodada_2_gerar_relacao_de_valores(
     apuracao_diaria: pd.DataFrame,
     df_cadastro: pd.DataFrame,
-    df_consignados: pd.DataFrame,
+    df_consignados: pd.DataFrame | None,
     df_banco_horas: pd.DataFrame,
     decisoes_rh: pd.DataFrame | None,
     competencia: str,
@@ -548,13 +553,16 @@ def rodada_2_gerar_relacao_de_valores(
     resumo_mes = consolidar_mes(apuracao_diaria, decisoes_rh)
 
     df = df_cadastro.merge(resumo_mes, on="pis", how="left")
-    df = df.merge(df_consignados, on="pis", how="left")
+    if PREENCHER_CONSIGNADO and df_consignados is not None:
+        df = df.merge(df_consignados, on="pis", how="left")
+    else:
+        df["valor_consignado"] = float("nan")  # 0981 vazio: o escritorio desconta pelo extrato
     df = df.merge(df_banco_horas, on="pis", how="left")
 
     for col in ["horas_extra_50", "horas_extra_100", "horas_falta", "atraso_horas", "horas_falta_parcial",
                 "dias_falta", "dias_falta_parcial", "dias_falta_justificada", "dias_falta_injustificada",
                 "dias_desconto_va", "semanas_perde_dsr", "valor_consignado", "saldo_banco_horas"]:
-        if col in df.columns:
+        if col in df.columns and not (col == "valor_consignado" and not PREENCHER_CONSIGNADO):
             df[col] = df[col].fillna(0)
 
     df["valor_desconto_dsr"], valor_dia_dsr = _calcular_8794(df, unidade_dsr, valor_dia_dsr_por_pis)
@@ -837,6 +845,9 @@ def _escrever_workbook_formatado(grupo: pd.DataFrame, caminho: Path) -> None:
             )
             ws.column_dimensions[letra].width = min(max(maior + 3, 10), 42)
 
+        ws.auto_filter.ref = f"A1:{get_column_letter(len(colunas))}{n_linhas + 1}"
+        _configurar_impressao(ws, len(colunas), n_linhas + 1)
+
     wb = Workbook()
     ws_contabil = wb.active
     ws_contabil.title = "Contabilidade"
@@ -852,6 +863,262 @@ def _escrever_workbook_formatado(grupo: pd.DataFrame, caminho: Path) -> None:
     escrever_aba(ws_rh, colunas_rh, cabecalhos_rh, com_alerta=True)
 
     wb.save(caminho)
+
+
+# ---------------------------------------------------------------------------
+# Exportação da fila de exceções + decisões da revisão (etapa 4 do app)
+# ---------------------------------------------------------------------------
+
+_COR_PENDENTE_FUNDO = "FFF2CC"   # ambar suave: sem decisao ainda
+_COR_PENDENTE_TEXTO = "7F6000"
+_COR_RELOGIO_FUNDO = "DDEBF7"    # azul suave: provavel erro de relogio
+_COR_RELOGIO_TEXTO = "1F3864"
+_COR_ZEBRA = "F7F7F7"
+_FONTE_PADRAO = "Arial"
+_CARACTERES_ILEGAIS_XML = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
+_CARACTERES_INVALIDOS_ABA = re.compile(r"[\[\]:*?/\\]")
+
+# (cabecalho, coluna da fila, largura minima, largura maxima, alinhamento, formato)
+_COLUNAS_FILA_XLSX = [
+    ("Colaborador", "nome_colaborador", 24, 40, "left", None),
+    ("Empresa", "razao_social", 24, 40, "left", None),
+    ("Data", "data", 12, 12, "center", "DD/MM/YYYY"),
+    ("Situação", "situacao", 22, 36, "left", None),
+    ("Motivo", "motivo_validacao", 45, 70, "left", None),
+    ("Decisão", "classificacao", 24, 32, "left", None),
+    ("Status", None, 13, 13, "center", None),
+    ("Observação", "observacao", 40, 70, "left", None),
+]
+
+
+def nome_aba_seguro(nome: str, existentes=()) -> str:
+    """Nome de aba valido no Excel: sem []:*?/\\, ate 31 caracteres, sem repetir (sem diferenciar maiusculas)."""
+    base = _CARACTERES_INVALIDOS_ABA.sub(" ", str(nome)).strip().strip("'") or "Planilha"
+    base = base[:31]
+    usados = {e.lower() for e in existentes}
+    candidato, n = base, 1
+    while candidato.lower() in usados:
+        n += 1
+        sufixo = f" ({n})"
+        candidato = base[:31 - len(sufixo)] + sufixo
+    return candidato
+
+
+def _texto_seguro(valor) -> str | None:
+    """Texto sem caracteres de controle (o openpyxl recusa) e sem virar formula quando comeca com '='."""
+    if valor is None or (not isinstance(valor, str) and pd.isna(valor)):
+        return None
+    return _CARACTERES_ILEGAIS_XML.sub("", str(valor))
+
+
+def _configurar_impressao(ws, ultima_coluna: int, ultima_linha: int, titulo: str | None = None) -> None:
+    """Paisagem, 1 pagina de largura, cabecalho repetido, margens e rodape 'Pagina X de Y'."""
+    from openpyxl.utils import get_column_letter
+
+    ws.page_setup.orientation = "landscape"
+    ws.page_setup.paperSize = ws.PAPERSIZE_A4
+    ws.page_setup.fitToWidth = 1
+    ws.page_setup.fitToHeight = 0
+    ws.sheet_properties.pageSetUpPr.fitToPage = True
+    ws.print_title_rows = "1:1"
+    ws.print_area = f"A1:{get_column_letter(max(ultima_coluna, 1))}{max(ultima_linha, 1)}"
+    ws.page_margins.left = ws.page_margins.right = 0.5
+    ws.page_margins.top = 0.75
+    ws.page_margins.bottom = 0.75
+    ws.oddFooter.center.text = "Página &P de &N"
+    ws.oddFooter.center.size = 9
+    if titulo:
+        ws.oddHeader.left.text = titulo
+        ws.oddHeader.left.size = 9
+
+
+def _escrever_tabela_formatada(ws, df: pd.DataFrame, colunas: list[tuple], regras: list[tuple] | None = None,
+                               zebra: bool = True, congelar_colunas: int = 1, titulo_impressao: str | None = None) -> None:
+    """
+    Helper unico de estilo para tabelas de revisao. `colunas` = lista de
+    (cabecalho, chave_no_df | None, largura_min, largura_max, alinhamento, number_format);
+    chave None deixa a coluna em branco para as `regras`/o chamador preencherem depois.
+    `regras` = [(formula, intervalo_de_colunas "A:H", fundo, texto)] em formatacao
+    condicional (mais leve que preencher celula a celula); a formula e' escrita para
+    a primeira linha de dados e usa referencias relativas.
+    """
+    from openpyxl.formatting.rule import FormulaRule
+    from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+    from openpyxl.utils import get_column_letter
+
+    borda = Border(*[Side(style="thin", color=_COR_BORDA)] * 4)
+    n_linhas, n_colunas = len(df), len(colunas)
+
+    for j, (cabecalho, *_resto) in enumerate(colunas, start=1):
+        cel = ws.cell(row=1, column=j, value=cabecalho)
+        cel.font = Font(name=_FONTE_PADRAO, bold=True, color=_COR_TEXTO_CABECALHO)
+        cel.fill = PatternFill("solid", fgColor=_COR_CABECALHO)
+        cel.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        cel.border = borda
+    ws.row_dimensions[1].height = 30
+
+    maiores = [len(c[0]) for c in colunas]
+    for i, (_, linha) in enumerate(df.iterrows(), start=2):
+        for j, (_cab, chave, _mn, _mx, alinh, formato) in enumerate(colunas, start=1):
+            valor = linha[chave] if chave is not None and chave in df.columns else None
+            if isinstance(valor, pd.Timestamp):
+                valor = None if pd.isna(valor) else valor.to_pydatetime().date()
+            elif isinstance(valor, str) or valor is None or (not hasattr(valor, "item") and pd.isna(valor)):
+                valor = _texto_seguro(valor)
+            elif hasattr(valor, "item"):  # numpy -> python (numero de verdade, nunca texto)
+                valor = None if pd.isna(valor) else valor.item()
+            cel = ws.cell(row=i, column=j, value=valor)
+            if isinstance(valor, str):
+                cel.data_type = "s"  # texto que comeca com "=" nao pode virar formula
+                maiores[j - 1] = max(maiores[j - 1], max((len(p) for p in valor.split("\n")), default=0))
+            cel.font = Font(name=_FONTE_PADRAO)
+            cel.alignment = Alignment(horizontal=alinh, vertical="center" if alinh == "center" else "top", wrap_text=alinh == "left")
+            cel.border = borda
+            if formato:
+                cel.number_format = formato
+
+    for j, (_cab, _chave, minimo, maximo, *_r) in enumerate(colunas, start=1):
+        ws.column_dimensions[get_column_letter(j)].width = min(max(maiores[j - 1] + 3, minimo), maximo)
+
+    ultima = get_column_letter(n_colunas)
+    ws.freeze_panes = f"{get_column_letter(congelar_colunas + 1)}2"
+    ws.auto_filter.ref = f"A1:{ultima}{max(n_linhas + 1, 1)}"
+    ws.sheet_view.showGridLines = False
+
+    if n_linhas:
+        for formula, intervalo, fundo, texto in (regras or []):
+            ini, fim = intervalo.split(":")
+            ws.conditional_formatting.add(
+                f"{ini}2:{fim}{n_linhas + 1}",
+                FormulaRule(formula=[formula], fill=PatternFill("solid", bgColor=fundo, fgColor=fundo), font=Font(color=texto)),
+            )
+        if zebra:  # por ultimo = menor prioridade; as cores semanticas ganham
+            ws.conditional_formatting.add(
+                f"A2:{ultima}{n_linhas + 1}",
+                FormulaRule(formula=["MOD(ROW(),2)=0"], fill=PatternFill("solid", bgColor=_COR_ZEBRA, fgColor=_COR_ZEBRA)),
+            )
+    _configurar_impressao(ws, n_colunas, n_linhas + 1, titulo_impressao)
+
+
+def exportar_fila_excecoes_xlsx(fila: pd.DataFrame, competencia: str, opcoes_decisao: list[str],
+                                periodo: str = "", filtros_descricao: str = "",
+                                total_geral: int | None = None) -> bytes:
+    """
+    Planilha de auditoria da revisao de excecoes (so' apresentacao; nada do
+    calculo muda): aba "Resumo" (periodo, totais, classificadas x pendentes,
+    contagem por decisao e por empresa) e aba "Exceções" (uma linha por dia,
+    ordenada por empresa > colaborador > data, com Status Pendente/Classificada).
+    `opcoes_decisao` = rotulos validos da coluna Decisao, na ordem de exibicao.
+    Para exportar so' um recorte, passe a fila ja filtrada em `fila`, a descricao dos
+    filtros em `filtros_descricao` e o tamanho da fila completa em `total_geral`
+    (o Resumo mostra "Exibindo N de M"; todas as contagens sao do recorte).
+    """
+    import io
+    from openpyxl import Workbook
+    from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+
+    colunas_fila = [c for c in ("nome_colaborador", "razao_social", "data", "situacao", "motivo_validacao",
+                                "classificacao", "observacao") if c in fila.columns]
+    df = fila.reindex(columns=colunas_fila).copy()
+    for coluna in ("nome_colaborador", "razao_social", "situacao", "motivo_validacao", "classificacao", "observacao"):
+        if coluna in df.columns:
+            df[coluna] = df[coluna].fillna("").astype(str)
+    if "data" in df.columns:
+        df["data"] = pd.to_datetime(df["data"], errors="coerce")
+    ordem = [c for c in ("razao_social", "nome_colaborador", "data") if c in df.columns]
+    df = df.sort_values(ordem, kind="stable").reset_index(drop=True) if ordem else df
+
+    classificada = df["classificacao"].ne("") if "classificacao" in df.columns else pd.Series(False, index=df.index)
+    df["_status"] = np.where(classificada, "Classificada", "Pendente")
+
+    colunas = [(c[0], "_status" if c[0] == "Status" else c[1], *c[2:]) for c in _COLUNAS_FILA_XLSX]
+    colunas = [c for c in colunas if c[1] is None or c[1] in df.columns]
+    letras = {c[0]: chr(ord("A") + k) for k, c in enumerate(colunas)}
+    sit, dec, sts = letras.get("Situação"), letras.get("Decisão"), letras.get("Status")
+    ultima = chr(ord("A") + len(colunas) - 1)
+    regras = []
+    if sit:
+        regras.append((f'LEFT(${sit}2,23)="Provável erro de relógio"', f"A:{ultima}", _COR_RELOGIO_FUNDO, _COR_RELOGIO_TEXTO))
+        regras.append((f'LEFT(${sit}2,14)="Provável falta"', f"A:{ultima}", _COR_ALERTA_FUNDO, _COR_ALERTA_TEXTO))
+    if sts:
+        regras.append((f'${sts}2="Pendente"', f"{dec or sts}:{sts}", _COR_PENDENTE_FUNDO, _COR_PENDENTE_TEXTO))
+
+    wb = Workbook()
+    ws_resumo = wb.active
+    ws_resumo.title = "Resumo"
+    ws = wb.create_sheet(nome_aba_seguro("Exceções", [ws_resumo.title]))
+    _escrever_tabela_formatada(ws, df, colunas, regras, titulo_impressao=f"Revisão de exceções — {competencia}")
+
+    # --- Resumo ---------------------------------------------------------------
+    borda = Border(*[Side(style="thin", color=_COR_BORDA)] * 4)
+    fonte = Font(name=_FONTE_PADRAO)
+    fonte_neg = Font(name=_FONTE_PADRAO, bold=True)
+
+    def titulo(linha: int, texto: str, largura: int = 2):
+        for col in range(1, largura + 1):
+            cel = ws_resumo.cell(row=linha, column=col, value=texto if col == 1 else None)
+            cel.font = Font(name=_FONTE_PADRAO, bold=True, color=_COR_TEXTO_CABECALHO)
+            cel.fill = PatternFill("solid", fgColor=_COR_CABECALHO)
+            cel.alignment = Alignment(vertical="center")
+
+    def par(linha: int, rotulo: str, valor, col_valor: int = 2):
+        a = ws_resumo.cell(row=linha, column=1, value=_texto_seguro(rotulo))
+        b = ws_resumo.cell(row=linha, column=col_valor, value=valor if not isinstance(valor, str) else _texto_seguro(valor))
+        for cel in (a, b):
+            cel.font, cel.border = fonte, borda
+        b.alignment = Alignment(horizontal="right")
+        if isinstance(valor, str):
+            b.data_type = "s"
+
+    total, n_classif = len(df), int(classificada.sum())
+    titulo(1, f"Revisão de exceções — competência {competencia}", 3)
+    ws_resumo.row_dimensions[1].height = 26
+    ws_resumo["A2"] = f"Período: {periodo}" if periodo else None
+    ws_resumo["A2"].font = fonte
+    if filtros_descricao or total_geral is not None:
+        partes = [f"Filtros: {filtros_descricao or 'Nenhum'}"]
+        if total_geral is not None:
+            partes.append(f"Exibindo {len(df)} de {total_geral} exceções")
+        ws_resumo["A3"] = " · ".join(partes)
+        ws_resumo["A3"].font = fonte
+    empresas = sorted(e for e in df["razao_social"].unique() if e) if "razao_social" in df.columns else []
+    linha = 4
+    titulo(linha, "Totais", 3)
+    for rotulo, valor in (("Empresas", ", ".join(empresas) if len(empresas) <= 3 else f"{len(empresas)} empresas"),
+                          ("Total de exceções", total), ("Classificadas", n_classif), ("Pendentes", total - n_classif)):
+        linha += 1
+        par(linha, rotulo, valor)
+    linha += 2
+    titulo(linha, "Por decisão", 3)
+    contagem = df["classificacao"].value_counts() if "classificacao" in df.columns else pd.Series(dtype=int)
+    for opcao in [o for o in opcoes_decisao if o] + [o for o in contagem.index if o and o not in opcoes_decisao]:
+        linha += 1
+        par(linha, opcao, int(contagem.get(opcao, 0)))
+    linha += 1
+    par(linha, "Sem decisão (entram como falta injustificada)", total - n_classif)
+    if empresas:
+        linha += 2
+        titulo(linha, "Por empresa", 3)
+        for k, rotulo in enumerate(("Total", "Pendentes"), start=2):
+            ws_resumo.cell(row=linha, column=k, value=rotulo)
+        for empresa in empresas:
+            linha += 1
+            da_empresa = df["razao_social"] == empresa
+            par(linha, empresa, int(da_empresa.sum()))
+            cel = ws_resumo.cell(row=linha, column=3, value=int((da_empresa & ~classificada).sum()))
+            cel.font, cel.border, cel.alignment = fonte, borda, Alignment(horizontal="right")
+    ws_resumo.column_dimensions["A"].width = min(max([len(c.value) for c in ws_resumo["A"] if isinstance(c.value, str)] + [30]) + 3, 60)
+    ws_resumo.column_dimensions["B"].width = 18
+    ws_resumo.column_dimensions["C"].width = 14
+    ws_resumo.sheet_view.showGridLines = False
+    ws_resumo.page_setup.orientation = "portrait"
+    ws_resumo.page_setup.fitToWidth, ws_resumo.page_setup.fitToHeight = 1, 0
+    ws_resumo.sheet_properties.pageSetUpPr.fitToPage = True
+    ws_resumo.oddFooter.center.text = "Página &P de &N"
+
+    buffer = io.BytesIO()
+    wb.save(buffer)
+    return buffer.getvalue()
 
 
 if __name__ == "__main__":

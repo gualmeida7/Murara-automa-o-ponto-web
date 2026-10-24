@@ -502,3 +502,18 @@ if __name__ == "__main__":
         ).assign(**{"8794 (R$ 100/dia, ilustrativo)": em_valor["8794"].values})
         print(tabela.to_string(index=False))
         print(f"total em dias: {int(antes['8794'].sum())}")
+
+
+def test_0981_vazio_por_padrao_e_extrato_opcional():
+    cadastro, apuracao, _ = _cenario()
+    assert pipeline.PREENCHER_CONSIGNADO is False
+    banco = pd.DataFrame({"pis": cadastro["pis"], "saldo_banco_horas": 0.0})
+    com_extrato = rodar_sem = pipeline.rodada_2_gerar_relacao_de_valores(apuracao, cadastro, None, banco, None, "09/2026")
+    assert com_extrato["0981"].isna().all()
+    cons = pd.DataFrame({"pis": cadastro["pis"], "valor_consignado": 99.0})
+    assert pipeline.rodada_2_gerar_relacao_de_valores(apuracao, cadastro, cons, banco, None, "09/2026")["0981"].isna().all()
+    pipeline.PREENCHER_CONSIGNADO = True
+    try:
+        assert (pipeline.rodada_2_gerar_relacao_de_valores(apuracao, cadastro, cons, banco, None, "09/2026")["0981"] == 99.0).all()
+    finally:
+        pipeline.PREENCHER_CONSIGNADO = False

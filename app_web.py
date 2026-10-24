@@ -32,11 +32,13 @@ import streamlit as st
 from pipeline import (
     carregar_cadastro_colaboradores,
     carregar_consignados,
+    PREENCHER_CONSIGNADO,
     avisos_banco_horas,
     executar_checagens_preflight,
     rodada_1_gerar_fila_de_excecoes,
     rodada_2_gerar_relacao_de_valores,
     exportar_por_empresa,
+    exportar_fila_excecoes_xlsx,
     COLUNAS_OBRIGATORIAS_CADASTRO,
     UNIDADE_DSR_PADRAO,
     UNIDADES_DSR,
@@ -379,7 +381,7 @@ if passo > 1:
 with secao_leitura(f"1. Arquivos{resumo_arquivos}", passo == 1):
     st.write(
         "Envie todos os arquivos do fechamento de uma vez: Cadastro de Colaboradores, "
-        "Cartão Ponto e Espelho de Ponto (PDF) ou o AFD (.txt), Extrato de Consignados e, se houver, "
+        "Cartão Ponto e Espelho de Ponto (PDF) ou o AFD (.txt) e, se houver, "
         "o Banco de Horas do Secullum e/ou a planilha semanal do Adriano. "
         "O sistema identifica o tipo de cada arquivo."
     )
@@ -434,8 +436,9 @@ with secao_leitura(f"1. Arquivos{resumo_arquivos}", passo == 1):
     requisitos = [
         ("Cadastro de Colaboradores", "cadastro" in tipos_confirmados),
         ("Ponto: Cartão Ponto (PDF) ou Arquivo AFD (.txt)", tem_ponto_ck),
-        ("Extrato de Consignados", "consignados" in tipos_confirmados),
     ]
+    if PREENCHER_CONSIGNADO:
+        requisitos.append(("Extrato de Consignados", "consignados" in tipos_confirmados))
     st.write("**Arquivos obrigatórios**")
     for descricao, presente in requisitos:
         if presente:
@@ -465,7 +468,8 @@ with secao_leitura(f"1. Arquivos{resumo_arquivos}", passo == 1):
             # Slot "ponto": AFD sozinho, Cartão Ponto sozinho, ou Cartão + Espelho (conferência
             # cruzada completa). O Espelho sem Cartão nem AFD não tem o que cruzar.
             tem_ponto = "afd" in tipos_confirmados or "cartao_ponto" in tipos_confirmados
-            faltando = [t for t in ("cadastro", "consignados") if t not in tipos_confirmados]
+            obrigatorios = ("cadastro", "consignados") if PREENCHER_CONSIGNADO else ("cadastro",)
+            faltando = [t for t in obrigatorios if t not in tipos_confirmados]
             if not tem_ponto:
                 faltando.insert(1, "cartao_ponto")
             duplicados = [t for t in TIPOS_ARQUIVO_UNICO if len(tipos_confirmados.get(t, [])) > 1]
@@ -514,7 +518,10 @@ if st.session_state.get("arquivos_confirmados"):
             arquivos = st.session_state.arquivos_confirmados
             try:
                 cadastro = carregar_cadastro_colaboradores(arquivos["cadastro"][0])
-                consignados = carregar_consignados(arquivos["consignados"], cadastro=cadastro)
+                consignados = (
+                    carregar_consignados(arquivos["consignados"], cadastro=cadastro)
+                    if PREENCHER_CONSIGNADO and "consignados" in arquivos else None
+                )
                 banco_secullum = (
                     ler_banco_horas_secullum(arquivos["banco_secullum"][0], cadastro=cadastro)
                     if "banco_secullum" in arquivos else None
@@ -526,7 +533,7 @@ if st.session_state.get("arquivos_confirmados"):
                 )
                 executar_checagens_preflight(
                     cadastro, consignados, banco_secullum, banco_adriano,
-                    caminho_consignados=", ".join(arquivos["consignados"]),
+                    caminho_consignados=", ".join(arquivos.get("consignados", [])),
                     caminho_banco_secullum=arquivos.get("banco_secullum", [""])[0],
                     caminho_banco_adriano=arquivos.get("banco_adriano", [""])[0],
                 )
@@ -733,6 +740,15 @@ if "fila_tabela" in st.session_state:
                 st.session_state.pop(chave_anterior, None)
             st.session_state["_chave_editor_ativa"] = chave_editor
 
+            # Esconde o "Download as CSV" da barra da tabela (CSV cru que o Excel abre tudo na coluna A):
+            # a exportação suportada é a planilha .xlsx abaixo. Preenchido depois da tabela para já
+            # levar a última edição.
+            st.html(
+                "<style>[data-testid='stElementToolbarButton']:has(button[aria-label='Download as CSV'])"
+                "{display:none}</style>"
+            )
+            slot_exportar = st.container()
+
             # "data" (datetime) em vez de "data_exibicao" (texto dd/mm/aaaa): o texto ordenava por dia, não por mês
             colunas_exibidas = ["nome_colaborador", "razao_social", "data", "situacao", "motivo_validacao", "classificacao", "observacao"]
             tabela_editada = st.data_editor(
@@ -773,6 +789,47 @@ if "fila_tabela" in st.session_state:
             if houve_mudanca or sessao is None or sessao["status"] != status or sessao["total_excecoes"] != total:
                 db_sessao.criar_ou_atualizar_sessao(competencia_salva, total, status)
                 sessao = db_sessao.obter_sessao(competencia_salva)
+
+            with slot_exportar:
+                # Recorte recalculado sobre a fila JÁ atualizada com as edições desta execução
+                # (fila_filtrada, lá em cima, ainda não tem a última decisão).
+                exportar_filtrada = filtrar_fila(fila_atual, filtro_empresa, filtro_colaborador, filtro_situacao)
+                nome_base = f"revisao_excecoes_{str(st.session_state.competencia_final).replace('/', '-')}"
+                mime_xlsx = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                descricao_filtros = "; ".join(
+                    f"{rotulo}: {', '.join(valores)}"
+                    for rotulo, valores in (
+                        ("Empresa", filtro_empresa), ("Colaborador", filtro_colaborador), ("Situação", filtro_situacao),
+                    ) if valores
+                )
+                with st.container(horizontal=True):
+                    st.download_button(
+                        f"Baixar planilha filtrada (.xlsx) — {len(exportar_filtrada)} linha(s)"
+                        if filtrando else "Baixar planilha da revisão (.xlsx)",
+                        data=exportar_fila_excecoes_xlsx(
+                            exportar_filtrada, str(st.session_state.competencia_final), OPCOES_CLASSIFICACAO,
+                            resumo_periodo(), descricao_filtros, len(fila_atual),
+                        ),
+                        file_name=f"{nome_base}{'_filtrado' if filtrando else ''}.xlsx",
+                        mime=mime_xlsx,
+                        icon=":material/download:",
+                        disabled=exportar_filtrada.empty,
+                        key="download_revisao_filtrada",
+                        help="Uma informação por célula, com resumo por decisão e empresa.",
+                    )
+                    if filtrando:
+                        st.download_button(
+                            f"Baixar fila completa (.xlsx) — {len(fila_atual)} linha(s)",
+                            data=exportar_fila_excecoes_xlsx(
+                                fila_atual, str(st.session_state.competencia_final), OPCOES_CLASSIFICACAO,
+                                resumo_periodo(),
+                            ),
+                            file_name=f"{nome_base}.xlsx",
+                            mime=mime_xlsx,
+                            icon=":material/download:",
+                            type="tertiary",
+                            key="download_revisao_completa",
+                        )
 
             pendentes = total - classificadas
             if pendentes:

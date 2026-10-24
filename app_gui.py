@@ -44,6 +44,7 @@ from pipeline import (
     avisos_banco_horas,
     carregar_cadastro_colaboradores,
     carregar_consignados,
+    PREENCHER_CONSIGNADO,
     rodada_1_gerar_fila_de_excecoes,
     rodada_2_gerar_relacao_de_valores,
     exportar_por_empresa,
@@ -116,7 +117,8 @@ class AplicativoFolha(tk.Tk):
                              "Selecionar Cadastro de Colaboradores")
         self._linha_arquivo(secao_obrig, "Ponto (AFD .txt ou Cartão Ponto .pdf)", "afd",
                              "Selecionar Arquivo AFD (Ponto)")
-        self._linha_consignados(secao_obrig)
+        if PREENCHER_CONSIGNADO:
+            self._linha_consignados(secao_obrig)
 
         secao_opc = tk.LabelFrame(self, text="Banco de horas (opcional)", font=("Segoe UI", 10, "bold"), padx=10, pady=10)
         secao_opc.pack(fill="x", padx=16, pady=(4, 8))
@@ -244,7 +246,7 @@ class AplicativoFolha(tk.Tk):
             return "Selecione o arquivo de Cadastro de Colaboradores antes de continuar."
         if not self.caminhos["afd"].get():
             return "Selecione o Arquivo AFD (Ponto) antes de continuar."
-        if not self.caminhos_consignados:
+        if PREENCHER_CONSIGNADO and not self.caminhos_consignados:
             return "Selecione ao menos um Extrato de Consignados antes de continuar."
         if self.caminhos["banco_adriano"].get() and not self.pis_adriano.get().strip():
             return "Você selecionou a planilha do Adriano, mas não informou o PIS/matrícula dele."
@@ -273,7 +275,10 @@ class AplicativoFolha(tk.Tk):
             cadastro = carregar_cadastro_colaboradores(self.caminhos["cadastro"].get())
 
             self._status(1)
-            consignados = carregar_consignados(self.caminhos_consignados, cadastro=cadastro)
+            consignados = (
+                carregar_consignados(self.caminhos_consignados, cadastro=cadastro)
+                if PREENCHER_CONSIGNADO and self.caminhos_consignados else None
+            )
 
             banco_secullum = None
             if self.caminhos["banco_secullum"].get():

@@ -209,7 +209,7 @@ def test_conferencia_secullum_so_aparece_com_totais_e_nao_altera_valores():
     assert com["_sec_horas_falta"] == round(1085 / 60, 2)
     assert com["_dif_horas_falta"] == round(com["8069"] - 1085 / 60, 2)
     for codigo in ("0150", "0200", "8069", "8792", "8794", "0981", "0999"):
-        assert com[codigo] == sem[codigo], codigo
+        assert pd.isna(com[codigo]) and pd.isna(sem[codigo]) or com[codigo] == sem[codigo], codigo  # 0981 vem vazio
 
 
 # ---------------------------------------------------------------------------
