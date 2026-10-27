@@ -1,6 +1,27 @@
+# Dados reais / sensíveis
 Dados e Docs Reais/
-saida/
 dados/
+saida/
+
+# Banco e logs
 fechamento_folha.db
 fechamento_folha.log
+*.db
+*.log
+
+# Python
 __pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+
+# Editor / SO
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
+~$*
+
+# Streamlit (segredos)
+.streamlit/secrets.toml

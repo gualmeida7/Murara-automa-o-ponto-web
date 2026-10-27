@@ -369,6 +369,11 @@ def rodada_1_gerar_fila_de_excecoes(
     # Quem nao registra ponto (registra_ponto = nao) fica fora da apuracao: sem dia, sem excecao, sem falta.
     jornadas = montar_jornadas(df_cadastro[_flag_cadastro(df_cadastro, COL_REGISTRA_PONTO, True)])
     apuracao = apurar_periodo(batidas_por_dia, jornadas, data_inicio, data_fim, feriados=feriados)
+    # Cadastrado que registra ponto mas nao tem NENHUMA batida no arquivo (ex.: desligado que
+    # continua no cadastro): sem isto o mes inteiro viraria falta calada. Viaja em attrs, como
+    # os totais do Secullum, para o app avisar o RH antes de fechar.
+    com_batida = set(batidas_por_dia["pis"]) if not batidas_por_dia.empty else set()
+    apuracao.attrs["sem_ponto"] = [pis for pis in jornadas if pis not in com_batida]
     # Totais impressos pelo proprio Secullum (so' no Cartao Ponto em PDF): viajam
     # junto da apuracao para a conferencia da rodada 2, sem mudar o retorno.
     if resultado_ponto.totais_secullum is not None:

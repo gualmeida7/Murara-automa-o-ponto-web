@@ -649,6 +649,47 @@ if st.session_state.get("preflight_ok"):
                 )
             st.rerun()
 
+    apuracao_ref = st.session_state.get("apuracao_diaria")
+    if apuracao_ref is not None and "cadastro_df" in st.session_state:
+        cad = st.session_state.cadastro_df
+        registra = cad["registra_ponto"].fillna(True).astype(bool) if "registra_ponto" in cad.columns else True
+        sem_ponto = cad[cad["pis"].isin(apuracao_ref.attrs.get("sem_ponto", [])) & registra]
+        if not sem_ponto.empty:
+            nomes = {f"{r.nome} (PIS {r.pis})": r.pis for r in sem_ponto.itertuples()}
+            with st.container(width=LARGURA_LEITURA, border=True):
+                st.warning(
+                    f"**{len(sem_ponto)} colaborador(es) estão no cadastro mas não têm nenhuma batida no ponto.** "
+                    "Se nada for feito, o período inteiro deles entra como falta. Isso costuma ser desligado "
+                    "que ficou no cadastro, ou quem não usa o relógio.",
+                    icon=":material/warning:",
+                )
+                escolhidos = st.multiselect("Colaboradores sem ponto", list(nomes), key="sem_ponto_escolhidos")
+                acao = st.radio(
+                    "O que fazer com os selecionados?",
+                    ["Desligado: tirar do fechamento", "Não registra ponto: manter no relatório com COPR \"Conferir\""],
+                    key="sem_ponto_acao",
+                )
+                if st.button("Aplicar e reprocessar", disabled=not escolhidos):
+                    pis_escolhidos = [nomes[n] for n in escolhidos]
+                    if acao.startswith("Desligado"):
+                        st.session_state.cadastro_df = cad[~cad["pis"].isin(pis_escolhidos)].reset_index(drop=True)
+                    else:
+                        novo = cad.copy()
+                        if "registra_ponto" not in novo.columns:
+                            novo["registra_ponto"] = True
+                        novo["registra_ponto"] = novo["registra_ponto"].fillna(True).astype(bool)
+                        novo.loc[novo["pis"].isin(pis_escolhidos), "registra_ponto"] = False
+                        st.session_state.cadastro_df = novo
+                    for chave in ("apuracao_diaria", "fila_tabela", "sem_ponto_escolhidos"):
+                        st.session_state.pop(chave, None)
+                    limpar_estado_editor()
+                    agendar_mensagem(
+                        "info",
+                        f"{len(pis_escolhidos)} colaborador(es) ajustado(s) só nesta sessão (a planilha de cadastro "
+                        "não foi alterada). Clique em **Processar** de novo.",
+                    )
+                    st.rerun()
+
     if "feriados_periodo" in st.session_state:
         if st.session_state.feriados_periodo:
             avisos.append((

@@ -56,6 +56,7 @@ Testes: `teste_sintetico.py` (ponta a ponta com dados fictícios), `teste_banco_
 
 ## Cuidados
 
+- **Origem dos arquivos em `Dados e Docs Reais/`**: só `cadastro_sintetico.xlsx` foi feito pelo desenvolvedor (fictício). Todo o resto — Cartão Ponto e Espelho de Ponto (PDF), extratos de consignado (`<CNPJ>-<aaaamm>v1.4.xlsx`) e `Consignado Modificado.xlsx` — são documentos **reais do cliente**. Ao alterar o código, trate o cadastro como sintético (pode não refletir o real, p.ex. sem colunas opcionais) e os demais como formato real que o parser precisa continuar aceitando. Nunca cite nomes/PIS/valores deles em guias, testes ou saídas.
 - **Dados reais e sensíveis** (PIS, nomes, folha): `Dados e Docs Reais/`, `dados/`, `saida/`, `fechamento_folha.db` e `.log` estão no `.gitignore` — nunca commite nem cole esse conteúdo em saídas. Os `.txt`/`.xlsx` soltos na raiz (AFD/espelho/planilha) são amostras não rastreadas; confirme com o usuário antes de commitá-los.
 - Não apague nem recrie `fechamento_folha.db` sem pedir: contém decisões do RH.
 - `feriados.csv` é gerado por `gerar_feriados.py`; edite o gerador (ou use seus args) em vez de editar o CSV à mão.

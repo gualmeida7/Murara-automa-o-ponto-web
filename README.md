@@ -60,6 +60,8 @@ encerrar. Não precisa de internet — tudo roda localmente no computador.
 3. **Processar o ponto** — só essa etapa (a mais pesada) roda sob demanda,
    num botão separado, para a página não reprocessar o AFD inteiro a cada
    pequena interação com a tela.
+   Logo depois de processar, se houver alguém **no cadastro sem nenhuma batida
+   no ponto**, aparece um aviso (veja "Cadastrado sem ponto" abaixo).
 4. **Tabela de aprovação embutida** — as exceções aparecem numa tabela
    interativa, com o nome do colaborador já cruzado e um dropdown de
    decisão (Falta injustificada / Falta justificada / Erro de relógio —
@@ -69,6 +71,48 @@ encerrar. Não precisa de internet — tudo roda localmente no computador.
 5. **Gerar e baixar** — um clique consolida tudo em memória e libera o
    download do `.xlsx` final por empresa (ou de todos juntos, num `.zip`),
    já com as abas "Contabilidade" e "Conferência RH" formatadas.
+
+### Documentos do mês (o que subir e quando mexer em cada um)
+
+Todos entram na mesma área de arrastar-e-soltar da etapa 1; o sistema reconhece o tipo sozinho.
+Exemplos reais estão em `Dados e Docs Reais/`.
+
+| Documento | Obrigatório | De onde vem | Quando alterar |
+|---|---|---|---|
+| Cadastro de Colaboradores (`.xlsx`) | Sim | Planilha mantida pelo RH (modelo: `cadastro_sintetico.xlsx`) | Admissão, desligamento, troca de jornada, empresa, banco de horas ou quem não bate ponto |
+| Cartão Ponto (PDF Secullum) ou AFD (`.txt`) | Um dos dois | Secullum, período 26 a 25 | Todo mês: exportar de novo |
+| Espelho de Ponto (PDF Secullum) | Não, mas recomendado | Secullum, mesmo período | Todo mês; ajuda a separar erro de relógio de falta real |
+| Extrato de Consignados (`.xlsx`) | Não | Um arquivo por empresa (CNPJ), como `<cnpj>-<aaaamm>v1.4.xlsx` | Todo mês; pode subir mais de um arquivo |
+| Banco de horas (Secullum ou planilha do Adriano) | Só se houver quem use banco | Secullum / planilha | Todo mês |
+
+Colunas obrigatórias do cadastro: `pis`, `matricula`, `nome`, `codigo_empresa`, `razao_social`,
+`entrada`, `saida_almoco`, `retorno_almoco`, `saida`, `dias_trabalho` (0 = segunda ... 6 = domingo,
+ex.: `0,1,2,3,4`). As opcionais estão na seção "Colunas opcionais" mais abaixo.
+
+Quando algo muda nos colaboradores, a regra é **mexer no cadastro, não nos outros arquivos**:
+
+- **Admitido:** nova linha no cadastro (PIS e matrícula iguais aos do Secullum e dos consignados).
+- **Desligado:** apagar a linha do cadastro antes do fechamento seguinte. Se ele aparecer no ponto,
+  é ignorado com um aviso. Se ele ficar no cadastro sem ponto, o app avisa (veja abaixo).
+- **Mudou horário ou dias de trabalho:** ajustar as colunas de jornada.
+- **Passou a usar ou sair do banco de horas, ou não bate ponto:** colunas `banco_horas` e `registra_ponto`.
+- **Novo empréstimo consignado:** vem no extrato do mês, não precisa mexer no cadastro, mas a
+  matrícula do extrato precisa existir no cadastro, senão o fechamento para com erro.
+
+### Cadastrado sem ponto (aviso antes de fechar)
+
+Quem está no cadastro, registra ponto e **não tem nenhuma batida** no arquivo de ponto teria o
+período inteiro lançado como falta. Depois de **Processar**, o app lista essas pessoas e deixa
+escolher, para cada uma:
+
+- **Desligado: tirar do fechamento** — a pessoa sai da Relação de Valores;
+- **Não registra ponto** — fica no relatório com zeros nos códigos do relógio e COPR "Conferir".
+
+Depois de aplicar, clique em **Processar** de novo. O ajuste vale só para a sessão: a planilha de
+cadastro não é alterada, então o certo é atualizá-la também (desligado: apagar a linha;
+sem relógio: `registra_ponto = não`). Por baixo, a lista fica em `apuracao.attrs["sem_ponto"]`
+(`pipeline.rodada_1_gerar_fila_de_excecoes`). O caso inverso (no ponto, fora do cadastro) não
+trava: a pessoa é ignorada e entra um aviso na leitura.
 
 ### Sobre o estado da sessão (o que perde e o que não perde)
 
