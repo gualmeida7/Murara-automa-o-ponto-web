@@ -48,11 +48,11 @@ Use o venv do projeto:
 
 ```powershell
 .\.venv\Scripts\python.exe -m pytest -q                       # todos os testes
-.\.venv\Scripts\python.exe -m pytest teste_feriados.py -q     # um arquivo
+.\.venv\Scripts\python.exe -m pytest tests/teste_feriados.py -q # um arquivo
 .\.venv\Scripts\streamlit.exe run app_web.py                  # app em localhost:8501
 ```
 
-Testes: `teste_sintetico.py` (ponta a ponta com dados fictícios), `teste_banco_dsr.py`, `teste_falta_parcial.py`, `teste_feriados.py`, `teste_export_excecoes.py`. Mudou regra em `business_rules.py` ou `pipeline.py` → rode a suíte inteira antes de dizer que terminou, e adicione/ajuste teste para o caso novo.
+Testes: `tests/teste_sintetico.py` (ponta a ponta com dados fictícios), `tests/teste_banco_dsr.py`, `tests/teste_falta_parcial.py`, `tests/teste_feriados.py`, `tests/teste_export_excecoes.py`. Mudou regra em `business_rules.py` ou `pipeline.py` → rode a suíte inteira antes de dizer que terminou, e adicione/ajuste teste para o caso novo.
 
 ## Cuidados
 

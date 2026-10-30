@@ -17,8 +17,8 @@ formato exigido pela contabilidade.
 | `validacao.py` | Validação defensiva compartilhada — colunas obrigatórias e checagem pré-voo de PIS/matrícula — com a exceção amigável `ArquivoInvalidoError`. |
 | `pipeline.py` | Orquestra tudo e gera um arquivo `.xlsx` por empresa no layout da "Relação de Valores". |
 | `dashboard_aprovacao.html` | Painel de aprovação — abra no navegador, carregue o CSV de exceções, classifique, exporte a decisão. Não depende de instalar nada. |
-| `teste_banco_dsr.py` | Testes do banco de horas (colunas do cadastro, roteamento, preflight, saldo em hh:mm) e do desconto de DSR (8794) em dias ou em valor. `pytest teste_banco_dsr.py`. |
-| `teste_sintetico.py` | Gera dados fictícios e roda o pipeline inteiro — use como prova de conceito e como referência do formato de cada planilha de entrada. |
+| `tests/teste_banco_dsr.py` | Testes do banco de horas (colunas do cadastro, roteamento, preflight, saldo em hh:mm) e do desconto de DSR (8794) em dias ou em valor. `pytest tests/teste_banco_dsr.py`. |
+| `tests/teste_sintetico.py` | Gera dados fictícios e roda o pipeline inteiro — use como prova de conceito e como referência do formato de cada planilha de entrada. |
 | `app_gui.py` | Interface gráfica (tkinter) para quem não programa: botões para selecionar os arquivos e um botão "Processar Folha de Pagamento". Ver seção "Aplicativo visual (desktop)" abaixo. |
 | `app_web.py` | Versão 100% web (Streamlit), numa única tela: upload arrastar-e-soltar, checagem pré-voo instantânea, tabela de aprovação embutida e download direto do Excel — sem nenhum arquivo intermediário. Ver seção "Aplicativo web (Streamlit)" abaixo. |
 | `requirements_web.txt` | Dependências para rodar `app_web.py` (`pip install -r requirements_web.txt`). |
@@ -477,7 +477,7 @@ python pipeline.py          # gera saida/fila_validacao_rh.csv
 python pipeline.py
 ```
 
-`teste_sintetico.py` reproduz esse fluxo inteiro com dados fictícios, útil
+`tests/teste_sintetico.py` reproduz esse fluxo inteiro com dados fictícios, útil
 para validar o ambiente antes de apontar para os arquivos reais.
 
 ## O que ainda depende de decisão sua antes de ir para produção
