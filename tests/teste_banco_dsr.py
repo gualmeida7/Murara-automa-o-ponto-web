@@ -361,7 +361,7 @@ def test_exportacao_mostra_colunas_auxiliares_e_nao_destaca_conferir():
     from openpyxl import load_workbook
 
     wb = load_workbook(arquivos[0])
-    assert wb["Contabilidade"].max_column == 12   # layout da contabilidade intacto
+    assert wb["Contabilidade"].max_column == 10   # layout da "Relacao de Valores" da cliente (A:J)
     ws = wb["Conferência RH"]
     cabecalhos = [c.value for c in ws[1]]
     for esperado in ("Banco de horas", "HE 50% enviada ao banco", "HE 100% enviada ao banco",
@@ -517,3 +517,53 @@ def test_0981_vazio_por_padrao_e_extrato_opcional():
         assert (pipeline.rodada_2_gerar_relacao_de_valores(apuracao, cadastro, cons, banco, None, "09/2026")["0981"] == 99.0).all()
     finally:
         pipeline.PREENCHER_CONSIGNADO = False
+
+
+# ---------------------------------------------------------------------------
+# Aba "Contabilidade" no layout da "Relacao de Valores" da cliente
+# ---------------------------------------------------------------------------
+def test_horas_em_hhmm_como_a_planilha_da_cliente():
+    assert pipeline._horas_para_hhmm(2.27) == 2.16      # 2h16
+    assert pipeline._horas_para_hhmm(10.83) == 10.5     # 10h50
+    assert pipeline._horas_para_hhmm(0.17) == 0.1       # 0h10
+    assert pipeline._horas_para_hhmm(-10.98) == -10.59  # banco negativo
+    assert pipeline._horas_para_hhmm(0) is None and pipeline._horas_para_hhmm(float("nan")) is None
+    assert pipeline._nome_proprio("ALAN DA SILVA FERREIRA") == "Alan da Silva Ferreira"
+
+
+def test_aba_contabilidade_segue_o_layout_da_cliente():
+    cadastro, apuracao, _ = _cenario()
+    rel = _rodar(cadastro, apuracao).assign(_cnpj="17.155.411/0001-59")
+    from openpyxl import load_workbook
+
+    ws = load_workbook(exportar_por_empresa(rel, str(_pasta()))[0])["Contabilidade"]
+    assert ws["A1"].value == "RELAÇÃO DE VALORES PARA FOLHA DE PAGAMENTO"
+    assert ws["A5"].value == "Inscrição Cnpj:" and ws["C5"].value == "17.155.411/0001-59"
+    assert ws["C6"].number_format == "mm/yyyy"
+    assert [ws.cell(row=10, column=c).value for c in range(4, 11)] == [150, 200, 8069, 8792, 8794, 981, 999]
+    assert [ws.cell(row=11 + i, column=1).value for i in range(len(rel))] == [11] * len(rel)
+    total = ws.cell(row=11 + len(rel) + 1, column=1)
+    assert total.value == "TOTAL" and ws.cell(row=total.row, column=2).value == len(rel)
+
+
+def test_0999_fica_em_branco_na_contabilidade_e_o_saldo_vai_na_conferencia_rh():
+    cadastro, apuracao, _ = _cenario()
+    rel = _rodar(cadastro, apuracao)
+    assert _linha(rel, "100")["0999"] != 0          # o saldo existe no calculo
+    from openpyxl import load_workbook
+
+    def celula_0999(preencher: bool):
+        antigo, pipeline.PREENCHER_BANCO_NO_0999 = pipeline.PREENCHER_BANCO_NO_0999, preencher
+        try:
+            wb = load_workbook(exportar_por_empresa(rel, str(_pasta()))[0])
+        finally:
+            pipeline.PREENCHER_BANCO_NO_0999 = antigo
+        ws = wb["Contabilidade"]
+        linha = next(r for r in range(11, ws.max_row + 1) if str(ws.cell(row=r, column=2).value) == "100")
+        rh = wb["Conferência RH"]
+        col = [c.value for c in rh[1]].index("Banco de Horas (0999)") + 1
+        return ws.cell(row=linha, column=10).value, rh.cell(row=2 + list(rel["codigo_folha"].astype(str)).index("100"), column=col).value
+
+    contab, rh = celula_0999(False)
+    assert contab is None and rh not in (None, 0)
+    assert celula_0999(True)[0] is not None

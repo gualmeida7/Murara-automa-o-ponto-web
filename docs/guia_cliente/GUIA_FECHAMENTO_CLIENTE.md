@@ -37,6 +37,23 @@ Uma linha por funcionário. Os **nomes das colunas precisam ser exatamente estes
 | banco_horas *(opcional)* | sim/não: usa banco de horas | não |
 | registra_ponto *(opcional)* | sim/não: bate ponto. "não" = fica fora do cálculo de faltas | sim |
 | valor_dia_dsr *(opcional)* | Valor em R$ de um dia de descanso | 85,00 |
+| saida_sexta *(opcional)* | Horário de saída na sexta, quando for diferente dos outros dias | 16:30 |
+| admissao *(opcional)* | Data de admissão (dd/mm/aaaa). Dias antes dela não contam como falta, e o vale do mês de admissão sai proporcional | 14/10/2026 |
+| cnpj *(opcional)* | CNPJ da empresa, para o cabeçalho da planilha do escritório | 17.155.411/0001-59 |
+
+Colunas opcionais usadas só na **Planilha do Thales** (em branco = célula vazia):
+
+| Coluna | O que escrever | Exemplo |
+|---|---|---|
+| centro_custo | CC, como você escreve hoje | 07 e 25 |
+| valor_va | Valor do vale do mês (Alelo/Ticket) em R$ | 960 |
+| beneficio | Nome do vale no título da empresa | Ticket |
+| cooper | Valor da Cooper em R$ | 200 |
+| desconto_folha | Desconto em folha do mês em R$ (vai também no "Adiant.Salario" da planilha do escritório) | 224 |
+| observacao | Texto livre para a coluna Observações | *10X R$ 224,00 VENDA 21779 (Parc 07) |
+| nota_rodape | Nota escrita abaixo da tabela da empresa, como "Nome: texto" (o sistema coloca o primeiro nome) | atestado em 28/05, detenção desde 24/06 |
+
+`desconto_folha`, `observacao` e `nota_rodape` mudam todo mês: atualize antes de processar.
 
 ## Passo a passo
 
@@ -70,7 +87,9 @@ Se aparecer um PIS ou matrícula que não está no cadastro, o sistema mostra **
 
 Linha em branco conta como falta injustificada (é a opção mais segura). Seu progresso é salvo sozinho como rascunho, então você pode voltar depois. [Print: tabela de exceções]
 
-**6. Etapa 5 – Download.** Clique em **"Gerar fechamento final"**. Baixe uma planilha por empresa (botão **"Baixar"**) ou tudo junto (**"Baixar todos os arquivos (.zip)"**). Cada planilha tem duas abas: **"Contabilidade"** (para enviar à contabilidade) e **"Conferência RH"** (para você conferir). Envie os arquivos à contabilidade. [Print: botões de download]
+**6. Etapa 5 – Download.** Clique em **"Gerar fechamento final"**. Baixe os arquivos (botão **"Baixar"**) ou tudo junto (**"Baixar todos os arquivos (.zip)"**). Saem: **uma "Relação de Valores" por empresa**, igual à planilha que você envia ao escritório (horas no formato hh.mm, como você digita; aba **"Contabilidade"** para enviar e aba **"Conferência RH"** para você conferir), e a **Planilha do Thales**, com o resumo das duas empresas. O banco de horas (0999) sai em branco na planilha do escritório, como você faz hoje; o saldo aparece nas Observações da planilha do Thales.
+
+**Dia em que o relógio falhou para todos:** na Etapa 2, preencha **"Dias abonados para todos"** (ex.: `14/10/2026, 15/10/2026`) antes de processar. Quem não fechou as 4 batidas nesses dias não leva falta nem perde DSR, VA ou COPR. [Print: botões de download]
 
 ## Quando os funcionários mudam
 

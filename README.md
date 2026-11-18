@@ -444,10 +444,30 @@ DSR seria descontado duas vezes. Hoje cada fechamento enxerga só o seu período
   Relação de Valores consolidada por `codigo_empresa` + `razao_social` e
   grava um `.xlsx` separado por empresa (Maçaneiro e Gonzaga / Cianorte
   Tubos), com **duas abas**:
-  - **"Contabilidade"** — estritamente as colunas do layout exigido
-    (Código Empresa, Razão Social, Competência, Código Folha, Nome do
-    Colaborador, 0150, 0200, 8069, 8792, 8794, 0981, 0999), sem nenhuma
-    coluna auxiliar interna.
+  - **"Contabilidade"** — idêntica à "Relação de Valores" que a cliente envia ao
+    escritório: título, bloco da empresa (código, razão social, CNPJ, competência),
+    cabeçalho em duas linhas, uma linha por colaborador (tipo de cálculo 11, código
+    da folha, nome em "Nome Próprio", eventos 150/200/8069/8792/8794/981/999) e linha
+    TOTAL. **Horas em `hh.mm`** (2h16 = `2.16`), como ela digita; zero fica em
+    branco. O CNPJ vem da coluna opcional `cnpj` do cadastro (sem ela, a célula
+    sai vazia). Nenhuma coluna auxiliar interna. O **0999 (banco de horas) sai em
+    branco**, como na planilha da cliente (o saldo vai só como observação ao Thales);
+    o saldo continua na aba "Conferência RH". Para voltar a lançá-lo, use
+    `PREENCHER_BANCO_NO_0999 = True` em `pipeline.py`.
+    O banco do Sidney pode subir direto o PDF "Resumo Banco de Horas" da cliente
+    (`banco_horas.ler_banco_horas_resumo_pdf`): o saldo é a linha "Acumulado" e o
+    colaborador é achado pelo **nome** no cadastro.
+  - **Planilha do Thales** (`planilha_thales.py`, `planilha_thales_mmaaaa.xlsx`) — resumo das
+    empresas no modelo que a cliente monta à mão (Fechamento mm/aaaa, CC, faltas com e sem
+    atestado, H/E, desconto em folha, Alelo/Ticket, Cooper, observações, totais). Faltas vêm da
+    apuração + decisões do RH; o restante, de colunas opcionais do cadastro (`centro_custo`,
+    `valor_va`, `beneficio`, `cooper`, `desconto_folha`, `observacao`, `admissao`, `nota_rodape` = nota "Nome: texto" abaixo da tabela da empresa). VA: proporcional
+    no mês da admissão (base 30) e −1/30 por falta inteira injustificada; banco de horas e
+    experiência viram observação. `desconto_folha` também vai no 0981 da aba Contabilidade.
+  - **Jornada**: colunas opcionais `saida_sexta` (saída diferente na sexta) e `admissao` (dias antes
+    dela não são falta). **Dias abonados para todos** (`dias_abonados` em
+    `rodada_1_gerar_fila_de_excecoes`, campo na etapa 2 do app): sem 4 batidas, o dia não gera
+    falta/atraso/fila (status `ABONO_COLETIVO`); com 4 batidas, apura normal.
   - **"Conferência RH"** — as mesmas colunas + Prêmio COPR
     (Perde/Não Perde), Dias de Falta, Dias Desconto VA e Semanas com
     Perda de DSR, com linhas de quem perde o prêmio ou tem falta elevada

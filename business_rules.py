@@ -24,7 +24,7 @@ Essa tabela e' o que alimenta o painel de aprovacao (dashboard_aprovacao.html).
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, datetime, time, timedelta
 from itertools import combinations
 from typing import Mapping
@@ -51,6 +51,16 @@ class Jornada:
     dias_trabalho: set[int]  # 0=segunda ... 6=domingo (datetime.weekday())
     tolerancia_min: int = TOLERANCIA_DIARIA_MIN
     tolerancia_por_batida_min: int = TOLERANCIA_POR_BATIDA_MIN
+    # Saida diferente na sexta-feira (ex.: 16:30 em vez de 17:30). None = igual aos demais dias.
+    saida_sexta: time | None = None
+    # Dias antes da admissao nao sao dia de trabalho: sem batida nao e' falta. None = sem limite.
+    admissao: date | None = None
+
+    def para_o_dia(self, dia: date) -> "Jornada":
+        """Jornada efetiva do dia: troca a saida na sexta-feira quando `saida_sexta` esta definida."""
+        if dia.weekday() == 4 and self.saida_sexta is not None:
+            return replace(self, saida=self.saida_sexta, saida_sexta=None)
+        return self
 
     def carga_horaria_min(self) -> int:
         manha = datetime.combine(date.min, self.saida_almoco) - datetime.combine(date.min, self.entrada)
@@ -129,6 +139,7 @@ def _minutos_nao_cobertos(batidas: list[datetime], idx_slots: tuple[int, ...], c
 
 def apurar_dia(
     pis: str, dia: date, batidas: list[datetime], jornada: Jornada, feriado: str | None = None,
+    abono_coletivo: str | None = None,
 ) -> dict:
     """
     Apura um unico dia de um colaborador. Retorna um dict com o resultado
@@ -146,9 +157,18 @@ def apurar_dia(
     `feriado` e' o nome do feriado do dia (ou None). Feriado e' dia nao util,
     como o domingo: sem batida nao e' falta; com batida, o tempo trabalhado
     vira hora extra 100%.
+
+    `abono_coletivo` (motivo, ou None) marca um dia em que o RH decidiu abonar TODOS (ex.: falha do
+    relogio): se as batidas nao fecham a jornada, nao ha falta, atraso nem pergunta ao RH - o dia
+    fica como "ABONO_COLETIVO". Com as 4 batidas, o dia e' apurado normalmente.
+
+    Jornada com `saida_sexta` usa essa saida nas sextas; antes de `admissao` o dia nao e' de
+    trabalho (sem batida nao e' falta).
     """
+    jornada = jornada.para_o_dia(dia)
     dow = dia.weekday()
-    dia_deveria_trabalhar = dow in jornada.dias_trabalho and feriado is None
+    antes_da_admissao = jornada.admissao is not None and dia < jornada.admissao
+    dia_deveria_trabalhar = dow in jornada.dias_trabalho and feriado is None and not antes_da_admissao
     n_batidas = len(batidas)
 
     base = {
@@ -177,6 +197,11 @@ def apurar_dia(
             base["status"] = "HE_100_FERIADO" if feriado else "HE_100_DIA_NAO_UTIL"
         elif feriado:
             base["status"] = "FERIADO"
+        return base
+
+    if abono_coletivo and n_batidas < 4:
+        base["status"] = "ABONO_COLETIVO"
+        base["motivo_validacao"] = abono_coletivo
         return base
 
     # Dia normal de trabalho, sem nenhuma batida => possivel falta
@@ -270,6 +295,7 @@ def apurar_periodo(
     data_inicio: date,
     data_fim: date,
     feriados: Mapping[date, str] | None = None,
+    dias_abonados: Mapping[date, str] | None = None,
 ) -> pd.DataFrame:
     """
     Apura todos os colaboradores/dias do periodo de fechamento (ex.: 26 a 25,
@@ -281,6 +307,7 @@ def apurar_periodo(
     trabalho para ninguem: neles a ausencia nao vira falta.
     """
     feriados = feriados or {}
+    dias_abonados = dias_abonados or {}
     linhas = []
     dias_periodo = pd.date_range(data_inicio, data_fim, freq="D").date
 
@@ -289,7 +316,7 @@ def apurar_periodo(
     for pis, jornada in jornadas.items():
         for dia in dias_periodo:
             batidas = batidas_idx.get((pis, dia), [])
-            linhas.append(apurar_dia(pis, dia, batidas, jornada, feriados.get(dia)))
+            linhas.append(apurar_dia(pis, dia, batidas, jornada, feriados.get(dia), dias_abonados.get(dia)))
 
     return pd.DataFrame(linhas)
 

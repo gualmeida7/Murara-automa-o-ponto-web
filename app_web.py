@@ -36,6 +36,7 @@ from pipeline import (
     avisos_banco_horas,
     executar_checagens_preflight,
     rodada_1_gerar_fila_de_excecoes,
+    ler_dias_abonados,
     rodada_2_gerar_relacao_de_valores,
     exportar_por_empresa,
     exportar_fila_excecoes_xlsx,
@@ -44,6 +45,7 @@ from pipeline import (
     UNIDADES_DSR,
 )
 import db_sessao
+from planilha_thales import exportar_planilha_thales
 from feriados import avisos_de_cobertura, carregar_feriados, descrever_feriados
 from banco_horas import consolidar_banco_horas, ler_banco_horas_secullum, ler_banco_horas_adriano
 from cartao_ponto_pdf import _sem_acento
@@ -131,6 +133,8 @@ def _classificar_pdf_ponto(caminho: str) -> str:
         return "espelho_ponto"
     if "CARTAO PONTO" in cabecalho:
         return "cartao_ponto"
+    if "RESUMO BANCO" in cabecalho:
+        return "banco_secullum"
 
     nome = _sem_acento(Path(caminho).name).lower()
     if "espelho" in nome:
@@ -280,6 +284,8 @@ def resumo_periodo() -> str:
 
 def contar_decisoes(fila: pd.DataFrame) -> tuple[int, int]:
     """(classificadas, total) da fila de exceções."""
+    if fila.empty or "classificacao" not in fila.columns:   # sem exceções (ex.: todos os dias abonados)
+        return 0, len(fila)
     return int((fila["classificacao"] != "").sum()), len(fila)
 
 
@@ -327,6 +333,8 @@ def estilo_situacao(valor: str) -> str:
 
 def empresa_do_arquivo(nome_arquivo: str, cadastro: pd.DataFrame) -> str:
     """Razão social da empresa a que o arquivo gerado pertence (o nome do arquivo traz a razão com '_')."""
+    if nome_arquivo.startswith("planilha_thales"):
+        return "Resumo do fechamento (Planilha do Thales)"
     for razao in cadastro["razao_social"].dropna().unique():
         if razao.replace(" ", "_") in nome_arquivo:
             return razao
@@ -589,7 +597,23 @@ if st.session_state.get("preflight_ok"):
             ),
         )
 
+        texto_abonos = st.text_input(
+            "Dias abonados para todos (opcional)",
+            key="dias_abonados_input",
+            placeholder="14/10/2026, 15/10/2026",
+            help=(
+                "Use quando o relógio falhou para todo mundo no dia: quem não fechou as 4 batidas não leva falta, "
+                "atraso nem perde DSR/VA/COPR, e o dia não vai para a fila. Dia com as 4 batidas é apurado normal. "
+                "Formato dd/mm/aaaa, separados por vírgula. Clique em Processar de novo depois de mudar."
+            ),
+        )
+
         if st.button("Processar ponto e calcular fechamento", type="primary"):
+            try:
+                dias_abonados = ler_dias_abonados(texto_abonos, data_inicio, data_fim)
+            except ArquivoInvalidoError as e:
+                st.error(f"**Dias abonados:** {e}")
+                st.stop()
             try:
                 feriados = carregar_feriados(incluir_facultativos=incluir_facultativos)
                 avisos_feriados = avisos_de_cobertura(data_inicio, data_fim, incluir_facultativos=incluir_facultativos)
@@ -607,6 +631,7 @@ if st.session_state.get("preflight_ok"):
                     caminho_ponto, st.session_state.cadastro_df, data_inicio, data_fim,
                     caminho_espelho=arquivos.get("espelho_ponto", [None])[0],
                     feriados=feriados,
+                    dias_abonados=dias_abonados,
                 )
                 st.session_state.apuracao_diaria = apuracao
                 fila_tabela = preparar_fila_para_tabela(fila, st.session_state.cadastro_df)
@@ -931,6 +956,11 @@ if "apuracao_diaria" in st.session_state:
                 if pasta_saida.exists():
                     shutil.rmtree(pasta_saida)
                 arquivos_gerados = exportar_por_empresa(relacao, str(pasta_saida))
+                arquivos_gerados.append(exportar_planilha_thales(
+                    relacao, st.session_state.apuracao_diaria, decisoes, st.session_state.cadastro_df,
+                    st.session_state.competencia_final,
+                    st.session_state.data_inicio_input, st.session_state.data_fim_input, str(pasta_saida),
+                ))
 
                 arquivos_finais = {}
                 for caminho in arquivos_gerados:

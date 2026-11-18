@@ -51,6 +51,8 @@ def ler_banco_horas_secullum(caminho_export: str, cadastro: pd.DataFrame | None 
     o colaborador pela matrícula interna, não pelo PIS — veja
     `validacao.normalizar_identificador_colaborador`.
     """
+    if str(caminho_export).lower().endswith(".pdf"):
+        return ler_banco_horas_resumo_pdf(caminho_export, cadastro)
     df = ler_arquivo_generico(caminho_export, "Banco de Horas do Secullum")
 
     coluna_saldo = next((c for c in df.columns if "saldo" in c), None)
@@ -69,6 +71,52 @@ def ler_banco_horas_secullum(caminho_export: str, cadastro: pd.DataFrame | None 
         out = normalizar_identificador_colaborador(out, "pis", cadastro, "Banco de Horas do Secullum", caminho_export)
     out["fonte"] = "secullum_sidney"
     return out
+
+
+def ler_banco_horas_resumo_pdf(caminho_pdf: str, cadastro: pd.DataFrame | None) -> pd.DataFrame:
+    """
+    Le o "Resumo Banco de Horas" que a cliente envia (PDF impresso da planilha dela): o nome do
+    colaborador vem logo abaixo do titulo e o saldo na linha "Acumulado: -10:59". Nao ha PIS nem
+    matricula no documento, entao o colaborador e' identificado pelo NOME no cadastro - sem
+    `cadastro`, ou com nome que nao bate com ninguem, e' erro (nunca atribui o saldo no escuro).
+    """
+    import re
+
+    import pdfplumber
+
+    from cartao_ponto_pdf import _sem_acento
+
+    try:
+        with pdfplumber.open(caminho_pdf) as pdf:
+            linhas = [l.strip() for pg in pdf.pages for l in (pg.extract_text() or "").splitlines() if l.strip()]
+    except Exception as e:
+        raise ArquivoInvalidoError(f"Não consegui ler o Resumo de Banco de Horas ('{caminho_pdf}'): {e}") from e
+
+    titulo = next((i for i, l in enumerate(linhas) if "resumo banco" in _sem_acento(l).lower()), None)
+    acumulado = next((re.search(r"-?\d+:\d{2}", l) for l in linhas if l.lower().startswith("acumulado")), None)
+    if titulo is None or titulo + 1 >= len(linhas) or acumulado is None:
+        raise ArquivoInvalidoError(
+            f"O arquivo '{caminho_pdf}' não parece um Resumo de Banco de Horas "
+            "(esperado: título, nome do colaborador e a linha 'Acumulado: hh:mm')."
+        )
+    nome = linhas[titulo + 1]
+    if cadastro is None:
+        raise ArquivoInvalidoError(
+            f"O Resumo de Banco de Horas ('{caminho_pdf}') identifica o colaborador só pelo nome ({nome}); "
+            "é preciso o Cadastro de Colaboradores para achar o PIS."
+        )
+
+    def chave(texto: str) -> str:
+        return " ".join(_sem_acento(str(texto)).upper().split())
+
+    achados = cadastro.loc[cadastro["nome"].map(chave) == chave(nome), "pis"].drop_duplicates()
+    if len(achados) != 1:
+        raise ArquivoInvalidoError(
+            f"O nome '{nome}' do Resumo de Banco de Horas ('{caminho_pdf}') "
+            f"{'não foi encontrado' if achados.empty else 'aparece mais de uma vez'} no Cadastro de Colaboradores."
+        )
+    saldo = converter_horas_decimais(acumulado.group(), f"Resumo de Banco de Horas ('{caminho_pdf}')", "Acumulado")
+    return pd.DataFrame({"pis": [achados.iloc[0]], "saldo_banco_horas": [saldo], "fonte": ["secullum_sidney"]})
 
 
 def ler_banco_horas_adriano(

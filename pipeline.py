@@ -68,6 +68,11 @@ COD_OUTROS_BANCO_HORAS = "0999"
 # vazio e o extrato e' opcional. True = volta a preencher o 0981 com o extrato enviado.
 PREENCHER_CONSIGNADO = False
 
+# A planilha que a cliente envia ao escritorio deixa o 0999 em branco para quem esta no banco de horas
+# (o saldo vai so' como observacao ao Thales). False = a aba "Contabilidade" sai com o 0999 vazio e o
+# saldo fica na aba "Conferencia RH". True = volta a lancar o saldo no 0999.
+PREENCHER_BANCO_NO_0999 = False
+
 COLUNAS_RELACAO_VALORES = [
     "codigo_empresa", "razao_social", "competencia",
     "codigo_folha", "nome_colaborador",
@@ -163,6 +168,42 @@ def _flag_cadastro(df_cadastro: pd.DataFrame, coluna: str, padrao: bool) -> pd.S
     return df_cadastro[coluna].fillna(padrao).astype(bool)
 
 
+def _hora_opcional(valor) -> time | None:
+    """Celula de hora opcional do cadastro (ex.: `saida_sexta`): vazio = None."""
+    if valor is None or pd.isna(valor) or str(valor).strip() == "":
+        return None
+    return pd.to_datetime(valor).time()
+
+
+def _data_opcional(valor) -> date | None:
+    """Celula de data opcional do cadastro (ex.: `admissao`, dd/mm/aaaa): vazio = None."""
+    if valor is None or pd.isna(valor) or str(valor).strip() == "":
+        return None
+    return pd.to_datetime(valor, dayfirst=True).date()
+
+
+def ler_dias_abonados(texto: str, data_inicio: date, data_fim: date, motivo: str = "Dia abonado para todos") -> dict[date, str]:
+    """
+    "14/10/2026, 15/10/2026" (virgula, ponto e virgula ou uma data por linha) -> {data: motivo}.
+    Data invalida ou fora do periodo e' erro (nunca ignorada em silencio).
+    """
+    dias: dict[date, str] = {}
+    for pedaco in re.split(r"[,;\n]+", texto or ""):
+        pedaco = pedaco.strip()
+        if not pedaco:
+            continue
+        try:
+            dia = pd.to_datetime(pedaco, format="%d/%m/%Y").date()
+        except ValueError:
+            raise ArquivoInvalidoError(f"Dia abonado '{pedaco}' inválido: use dd/mm/aaaa (ex.: 14/10/2026).") from None
+        if not data_inicio <= dia <= data_fim:
+            raise ArquivoInvalidoError(
+                f"Dia abonado {dia:%d/%m/%Y} está fora do período {data_inicio:%d/%m/%Y} a {data_fim:%d/%m/%Y}."
+            )
+        dias[dia] = motivo
+    return dias
+
+
 def montar_jornadas(df_cadastro: pd.DataFrame) -> dict[str, Jornada]:
     jornadas = {}
     for _, row in df_cadastro.iterrows():
@@ -173,6 +214,8 @@ def montar_jornadas(df_cadastro: pd.DataFrame) -> dict[str, Jornada]:
                 retorno_almoco=pd.to_datetime(row["retorno_almoco"]).time(),
                 saida=pd.to_datetime(row["saida"]).time(),
                 dias_trabalho=set(int(d) for d in str(row["dias_trabalho"]).split(",")),
+                saida_sexta=_hora_opcional(row.get("saida_sexta")),
+                admissao=_data_opcional(row.get("admissao")),
             )
         except Exception as e:
             raise ArquivoInvalidoError(
@@ -343,9 +386,13 @@ def rodada_1_gerar_fila_de_excecoes(
     data_fim: date,
     caminho_espelho: str | None = None,
     feriados: Mapping[date, str] | None = None,
+    dias_abonados: Mapping[date, str] | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """
     Retorna (apuracao_diaria_completa, fila_para_validacao_rh).
+
+    `dias_abonados` ({data: motivo}): dias em que o RH abona TODOS os colaboradores cujas
+    batidas nao fecham a jornada (ex.: falha do relogio) - sem falta, sem DSR, sem fila.
     `caminho_ponto` pode ser o AFD (.txt) ou o Cartao Ponto do Secullum
     (.pdf) - ver leitores_ponto.py.
 
@@ -368,7 +415,9 @@ def rodada_1_gerar_fila_de_excecoes(
     batidas_por_dia = agrupar_batidas_por_dia(resultado_ponto.batidas)
     # Quem nao registra ponto (registra_ponto = nao) fica fora da apuracao: sem dia, sem excecao, sem falta.
     jornadas = montar_jornadas(df_cadastro[_flag_cadastro(df_cadastro, COL_REGISTRA_PONTO, True)])
-    apuracao = apurar_periodo(batidas_por_dia, jornadas, data_inicio, data_fim, feriados=feriados)
+    apuracao = apurar_periodo(
+        batidas_por_dia, jornadas, data_inicio, data_fim, feriados=feriados, dias_abonados=dias_abonados,
+    )
     # Cadastrado que registra ponto mas nao tem NENHUMA batida no arquivo (ex.: desligado que
     # continua no cadastro): sem isto o mes inteiro viraria falta calada. Viaja em attrs, como
     # os totais do Secullum, para o app avisar o RH antes de fechar.
@@ -615,6 +664,11 @@ def rodada_2_gerar_relacao_de_valores(
     })
     if valor_dia_dsr is not None:
         saida["_valor_dia_dsr"] = valor_dia_dsr
+    if "cnpj" in df.columns:
+        saida["_cnpj"] = df["cnpj"]   # so' para o bloco da empresa na aba Contabilidade
+    if "desconto_folha" in df.columns:
+        # Desconto em folha do mes (ex.: venda parcelada): a cliente o lanca no "Adiant.Salario" (0981).
+        saida["_desconto_folha"] = pd.to_numeric(df["desconto_folha"], errors="coerce")
 
     totais_secullum = apuracao_diaria.attrs.get("totais_secullum")
     if totais_secullum is not None:
@@ -778,6 +832,130 @@ def _perde_copr(valor) -> bool:
     return isinstance(valor, (bool, np.bool_)) and bool(valor)
 
 
+_PARTICULAS_NOME = {"da", "de", "do", "das", "dos", "e"}
+
+
+def _nome_proprio(nome: str) -> str:
+    """'ALAN DA SILVA FERREIRA' -> 'Alan da Silva Ferreira' (como a cliente digita na planilha dela)."""
+    palavras = str(nome).strip().lower().split()
+    return " ".join(p if (p in _PARTICULAS_NOME and i) else p.capitalize() for i, p in enumerate(palavras))
+
+
+def _horas_para_hhmm(horas) -> float | None:
+    """
+    Horas decimais (2.27) -> convencao de planilha da cliente 'hh.mm' (2.16 = 2h16).
+    Zero/vazio vira None (celula em branco, como na planilha dela). Arredonda ao minuto:
+    o valor decimal ja' vem com 2 casas, erro de no maximo 0,3 min, entao o minuto sai exato.
+    """
+    if horas is None or pd.isna(horas):
+        return None
+    minutos = round(abs(float(horas)) * 60)
+    if minutos == 0:
+        return None
+    return (-1 if horas < 0 else 1) * (minutos // 60 + (minutos % 60) / 100)
+
+
+def _numero_ou_none(valor) -> float | None:
+    if valor is None or pd.isna(valor) or float(valor) == 0:
+        return None
+    return float(valor)
+
+
+def _escrever_aba_contabilidade(ws, grupo: pd.DataFrame) -> None:
+    """
+    Aba "Contabilidade" no MESMO layout da "Relacao de Valores" que a cliente envia ao escritorio
+    (titulo, bloco da empresa, codigos de evento em duas linhas de cabecalho, uma linha por
+    colaborador, TOTAL). Horas (0150, 0200, 8069, 0999) em 'hh.mm'; zero fica em branco.
+    O CNPJ vem da coluna opcional `cnpj` do cadastro (coluna `_cnpj` de `grupo`).
+    """
+    from openpyxl.styles import Alignment, Font
+
+    primeira = grupo.iloc[0]
+    competencia = str(primeira["competencia"])
+    try:
+        mes, ano = (int(p) for p in competencia.split("/"))
+        competencia_data = date(ano, mes, 1)
+    except ValueError:
+        competencia_data = competencia
+    cnpj = primeira["_cnpj"] if "_cnpj" in grupo.columns and pd.notna(primeira["_cnpj"]) else None
+
+    ws["A1"] = "RELAÇÃO DE VALORES PARA FOLHA DE PAGAMENTO"
+    ws["A1"].font = Font(name="Arial", bold=True, size=14)
+    ws.row_dimensions[1].height = 18
+    bloco = [
+        (3, "Codigo Empresa:", int(primeira["codigo_empresa"]) if str(primeira["codigo_empresa"]).isdigit()
+         else primeira["codigo_empresa"]),
+        (4, "Razão Social:", _nome_proprio(primeira["razao_social"]).replace(" Ltda", " LTDA")),
+        (5, "Inscrição Cnpj:", cnpj),
+        (6, "Competencia:", competencia_data),
+    ]
+    for linha, rotulo, valor in bloco:
+        ws.cell(row=linha, column=1, value=rotulo).font = Font(name="Arial", bold=True, size=11)
+        ws.merge_cells(start_row=linha, start_column=1, end_row=linha, end_column=2)
+        celula = ws.cell(row=linha, column=3, value=valor)
+        celula.font = Font(name="Arial", size=11)
+        celula.alignment = Alignment(horizontal="left")
+        ws.merge_cells(start_row=linha, start_column=3, end_row=linha, end_column=4)
+        if linha == 6:
+            celula.number_format = "mm/yyyy"
+
+    negrito = Font(name="Arial", bold=True, size=10)
+    for coluna, (alto, baixo) in enumerate(
+        [("Tipo de", "Calculo"), ("Código", "Folha"), ("Nome dos", "Colaboradores")], start=1,
+    ):
+        ws.cell(row=9, column=coluna, value=alto).font = negrito
+        ws.cell(row=10, column=coluna, value=baixo).font = negrito
+    eventos = [
+        (COD_HE_50, "Horas Extras 50%"), (COD_HE_100, "Horas Extras 100%"), (COD_HORAS_FALTA, "Horas Faltas"),
+        (COD_DIAS_FALTA, "Dias Faltas"), (COD_DESCONTO_DSR, "Desconto de DSR"),
+        (COD_ADIANTAMENTO_CONSIGNADO, "Adiant.Salario"), (COD_OUTROS_BANCO_HORAS, "Outros Eventos"),
+    ]
+    for coluna, (codigo, titulo) in enumerate(eventos, start=4):
+        ws.cell(row=9, column=coluna, value=titulo).font = negrito
+        celula = ws.cell(row=10, column=coluna, value=int(codigo))
+        celula.font = negrito
+        celula.number_format = "0000"
+    for coluna in range(1, 11):
+        for linha in (9, 10):
+            ws.cell(row=linha, column=coluna).alignment = Alignment(horizontal="center" if coluna != 3 else "left")
+
+    fonte = Font(name="Arial", size=9)
+    horas = {COD_HE_50, COD_HE_100, COD_HORAS_FALTA, COD_OUTROS_BANCO_HORAS}
+    linha = 11
+    for _, colaborador in grupo.iterrows():
+        ws.cell(row=linha, column=1, value=11).font = fonte   # tipo de calculo: folha mensal
+        folha = str(colaborador["codigo_folha"])
+        ws.cell(row=linha, column=2, value=int(folha) if folha.isdigit() else folha).number_format = "00000"
+        ws.cell(row=linha, column=3, value=_nome_proprio(colaborador["nome_colaborador"])).font = Font(name="Arial", size=10)
+        for coluna, (codigo, _) in enumerate(eventos, start=4):
+            bruto = colaborador[codigo]
+            if codigo == COD_OUTROS_BANCO_HORAS and not PREENCHER_BANCO_NO_0999:
+                bruto = None
+            if codigo == COD_ADIANTAMENTO_CONSIGNADO and "_desconto_folha" in grupo.columns:
+                bruto = colaborador["_desconto_folha"]
+            ws.cell(row=linha, column=coluna, value=_horas_para_hhmm(bruto) if codigo in horas else _numero_ou_none(bruto))
+        for coluna in range(1, 11):
+            celula = ws.cell(row=linha, column=coluna)
+            if coluna != 3:
+                celula.font = fonte
+            if coluna >= 4:
+                celula.number_format = "#,##0.00"
+        linha += 1
+
+    ultima = linha + 1
+    ws.cell(row=ultima, column=1, value="TOTAL").font = Font(name="Arial", bold=True, size=9)
+    ws.cell(row=ultima, column=2, value=len(grupo)).font = fonte
+    ws.cell(row=ultima, column=3, value="Colaboradores").font = fonte
+
+    larguras = {"A": 11.8, "B": 9, "C": 35}
+    for letra in "DEFGHIJ":
+        larguras[letra] = 18.7
+    for letra, largura in larguras.items():
+        ws.column_dimensions[letra].width = largura
+    _configurar_impressao(ws, 10, ultima)
+    ws.print_title_rows = "9:10"
+
+
 def _escrever_workbook_formatado(grupo: pd.DataFrame, caminho: Path) -> None:
     from openpyxl import Workbook
     from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
@@ -856,7 +1034,7 @@ def _escrever_workbook_formatado(grupo: pd.DataFrame, caminho: Path) -> None:
     wb = Workbook()
     ws_contabil = wb.active
     ws_contabil.title = "Contabilidade"
-    escrever_aba(ws_contabil, _COLUNAS_CONTABIL, _CABECALHOS_CONTABIL, com_alerta=False)
+    _escrever_aba_contabilidade(ws_contabil, grupo)
 
     ws_rh = wb.create_sheet("Conferência RH")
     colunas_rh = (
