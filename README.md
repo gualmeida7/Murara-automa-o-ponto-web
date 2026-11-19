@@ -68,6 +68,18 @@ encerrar. Não precisa de internet — tudo roda localmente no computador.
    abonar) direto na linha. Cada edição fica salva em
    `st.session_state` — não existe mais um CSV para baixar, classificar
    em outro programa e reimportar.
+
+   **Decidir por planilha (exportar → preencher → importar):** abaixo da tabela, baixe a
+   planilha das exceções (a filtrada por empresa/colaborador/situação ou a fila completa); quem
+   decide (Thales) preenche a coluna **Decisão** (use exatamente as opções do dropdown; maiúsculas e
+   espaços sobrando são tolerados) e, se quiser, a **Observação**; depois envie o arquivo em
+   *Importar planilha preenchida* e clique em **Aplicar decisões da planilha** (nada é aplicado só
+   por subir o arquivo, para o RH conferir o resumo). As linhas são casadas por Colaborador + Empresa +
+   Data. Decisão em branco não altera a linha (continua falta injustificada por padrão); se a decisão
+   da planilha diferir da já marcada na tela, a planilha prevalece e o resumo informa quantas foram
+   sobrescritas. O resumo lista também linhas não encontradas na fila, decisões inválidas, repetidas
+   (repetidas divergentes não são aplicadas) e ambíguas. A lógica fica em `importacao_excecoes.py`;
+   as decisões são gravadas no SQLite como as digitadas na tabela.
 5. **Gerar e baixar** — um clique consolida tudo em memória e libera o
    download do `.xlsx` final por empresa (ou de todos juntos, num `.zip`),
    já com as abas "Contabilidade" e "Conferência RH" formatadas.

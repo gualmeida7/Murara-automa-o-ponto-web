@@ -50,6 +50,7 @@ from feriados import avisos_de_cobertura, carregar_feriados, descrever_feriados
 from banco_horas import consolidar_banco_horas, ler_banco_horas_secullum, ler_banco_horas_adriano
 from cartao_ponto_pdf import _sem_acento
 from leitura_arquivos import ler_arquivo_generico
+from importacao_excecoes import importar_decisoes_excecoes_xlsx
 from leitores_ponto import EXTENSOES_ACEITAS as EXTENSOES_PONTO
 from validacao import ArquivoInvalidoError
 
@@ -320,6 +321,79 @@ def aplicar_decisao_em_lote() -> None:
     )
     fila.loc[filtradas.index, "classificacao"] = st.session_state.decisao_em_lote
     limpar_estado_editor()
+
+
+def aplicar_planilha_importada() -> None:
+    """
+    on_click do botão 'Aplicar decisões da planilha': lê a planilha preenchida, atualiza a fila por ÍNDICE,
+    grava no SQLite, atualiza o status da sessão e descarta o estado do editor (para a tabela mostrar o importado).
+    O resumo fica em st.session_state.resultado_importacao e é exibido logo abaixo do botão.
+    """
+    arquivo = st.session_state.get("upload_planilha_decisoes")
+    if arquivo is None:
+        return
+    st.session_state.pop("resultado_importacao", None)
+    st.session_state.pop("erro_importacao", None)
+    try:
+        resultado = importar_decisoes_excecoes_xlsx(
+            salvar_upload_em_disco(arquivo), st.session_state.fila_tabela, OPCOES_CLASSIFICACAO,
+        )
+    except ArquivoInvalidoError as e:
+        st.session_state.erro_importacao = str(e)
+        return
+
+    fila = st.session_state.fila_tabela
+    if not resultado.decisoes.empty:
+        fila.loc[resultado.decisoes.index, ["classificacao", "observacao"]] = resultado.decisoes[["classificacao", "observacao"]]
+        competencia = st.session_state.competencia_final
+        db_sessao.salvar_decisoes_em_lote(
+            competencia,
+            fila.loc[resultado.decisoes.index].rename(columns={"data_exibicao": "data"})[
+                ["pis", "data", "classificacao", "observacao"]
+            ],
+        )
+        classificadas = int((fila["classificacao"] != "").sum())
+        db_sessao.criar_ou_atualizar_sessao(
+            competencia, len(fila), "concluido" if classificadas == len(fila) else "em_andamento",
+        )
+    limpar_estado_editor()
+    st.session_state.resultado_importacao = resultado
+
+
+def estilo_situacao(valor: str) -> str:
+    """Cor de fundo translúcida (legível nos modos claro e escuro) para as situações do cruzamento com o Espelho."""
+    if valor.startswith("Provável erro de relógio"):
+        return "background-color: rgba(59, 130, 246, 0.22)"
+    if valor.startswith("Provável falta"):
+        return "background-color: rgba(239, 68, 68, 0.22)"
+    return ""
+
+
+def empresa_do_arquivo(nome_arquivo: str, cadastro: pd.DataFrame) -> str:
+    """Razão social da empresa a que o arquivo gerado pertence (o nome do arquivo traz a razão com '_')."""
+    if nome_arquivo.startswith("planilha_thales"):
+        return "Resumo do fechamento (Planilha do Thales)"
+    for razao in cadastro["razao_social"].dropna().unique():
+        if razao.replace(" ", "_") in nome_arquivo:
+            return razao
+    return "Empresa"
+
+
+# ---------------------------------------------------------------------------
+# Cabeçalho, progresso e áreas reservadas (preenchidas no fim do script, com o estado já atualizado)
+# ---------------------------------------------------------------------------
+st.title("Fechamento de Folha de Pagamento")
+st.caption("Maçaneiro e Gonzaga LTDA · Cianorte Tubos LTDA")
+
+passo = passo_atual()
+with st.container(horizontal=True):
+    for numero, nome_etapa in enumerate(ETAPAS, start=1):
+        if numero < passo:
+            st.badge(f"{numero}. {nome_etapa}", icon=":material/check:", color="green")
+        elif numero == passo:
+            st.badge(f"{numero}. {nome_etapa}", color="primary")
+        else:
+            st.badge(f"{numero}. {nome_etapa}", color="gray")
 
 
 def estilo_situacao(valor: str) -> str:
@@ -896,6 +970,44 @@ if "fila_tabela" in st.session_state:
                             type="tertiary",
                             key="download_revisao_completa",
                         )
+
+                with st.expander("Importar planilha preenchida", icon=":material/upload_file:"):
+                    st.caption(
+                        "Fluxo: baixe a planilha acima → quem decide preenche a coluna Decisão (e, se quiser, a "
+                        "Observação) → envie o arquivo aqui. Serve a planilha filtrada ou a fila completa. "
+                        "Decisão em branco não altera a linha; a planilha prevalece sobre decisões já marcadas."
+                    )
+                    st.file_uploader(
+                        "Importar planilha preenchida", type=["xlsx"], key="upload_planilha_decisoes",
+                        label_visibility="collapsed",
+                    )
+                    st.button(
+                        "Aplicar decisões da planilha",
+                        on_click=aplicar_planilha_importada,
+                        disabled=st.session_state.get("upload_planilha_decisoes") is None,
+                        icon=":material/playlist_add_check:",
+                    )
+                    if st.session_state.get("erro_importacao"):
+                        st.error(f"**Não foi possível importar a planilha:**\n\n{st.session_state.erro_importacao}")
+                    resultado_imp = st.session_state.get("resultado_importacao")
+                    if resultado_imp is not None:
+                        st.success(
+                            f"{resultado_imp.aplicadas} decisão(ões) aplicada(s) a partir da planilha"
+                            + (f" ({resultado_imp.sobrescritas} sobrescreveram decisão já marcada)"
+                               if resultado_imp.sobrescritas else "")
+                            + f". {resultado_imp.em_branco} linha(s) em branco ficaram como estavam."
+                        )
+                        for titulo_p, itens in (
+                            ("não encontrada(s) na fila", resultado_imp.nao_encontradas),
+                            ("com decisão inválida", resultado_imp.invalidas),
+                            ("repetida(s) na planilha", resultado_imp.duplicadas),
+                            ("ambígua(s) na fila", resultado_imp.ambiguas),
+                        ):
+                            if itens:
+                                detalhes = "\n".join(
+                                    f"- {i['colaborador']} · {i['empresa']} · {i['data']}: {i['motivo']}" for i in itens
+                                )
+                                st.warning(f"**{len(itens)} linha(s) {titulo_p}:**\n\n{detalhes}")
 
             pendentes = total - classificadas
             if pendentes:
