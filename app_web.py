@@ -23,7 +23,7 @@ import shutil
 import tempfile
 import zipfile
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 
 import pandas as pd
@@ -45,6 +45,7 @@ from pipeline import (
     UNIDADES_DSR,
 )
 import db_sessao
+from datas_br import formatar_data_br, parse_data_br
 from planilha_thales import exportar_planilha_thales
 from feriados import avisos_de_cobertura, carregar_feriados, descrever_feriados
 from banco_horas import consolidar_banco_horas, ler_banco_horas_secullum, ler_banco_horas_adriano
@@ -275,8 +276,8 @@ def agendar_mensagem(nivel: str, texto: str) -> None:
 
 
 def resumo_periodo() -> str:
-    inicio = st.session_state.get("data_inicio_input")
-    fim = st.session_state.get("data_fim_input")
+    inicio = st.session_state.get("periodo_inicio")
+    fim = st.session_state.get("periodo_fim")
     competencia = st.session_state.get("competencia_input", "")
     if inicio and fim:
         return f"{inicio:%d/%m/%Y} a {fim:%d/%m/%Y} · competência {competencia}"
@@ -558,6 +559,9 @@ with secao_leitura(f"1. Arquivos{resumo_arquivos}", passo == 1):
             if faltando:
                 st.error(
                     "Ainda faltam arquivos obrigatórios: "
+        # Estado antigo (date ou string ISO) vira dd/mm/aaaa; padrão = hoje, como antes.
+        for chave in ("data_inicio_input", "data_fim_input"):
+            st.session_state[chave] = formatar_data_br(st.session_state.get(chave, date.today()))
                     + ", ".join(RÓTULO_AMIGÁVEL[t] for t in faltando)
                     + (" (ou o Arquivo AFD)" if "cartao_ponto" in faltando else "")
                     + ". Envie-os e classifique corretamente antes de continuar."
@@ -589,14 +593,33 @@ if st.session_state.get("arquivos_confirmados"):
     with secao_leitura(f"2. Período e validação{resumo_etapa2}", passo == 2):
         col_a, col_b = st.columns(2)
         with col_a:
-            data_inicio = st.date_input("Início do período", key="data_inicio_input")
+            texto_inicio = st.text_input(
+                "Início do período", key="data_inicio_input",
+                placeholder="dd/mm/aaaa", max_chars=10,
+            )
         with col_b:
-            data_fim = st.date_input("Fim do período", key="data_fim_input")
+            texto_fim = st.text_input(
+                "Fim do período", key="data_fim_input",
+                placeholder="dd/mm/aaaa", max_chars=10,
+            )
+        data_inicio = parse_data_br(texto_inicio)
+        data_fim = parse_data_br(texto_fim)
+        if data_inicio is None:
+            st.error("Data de início inválida. Use o formato dd/mm/aaaa.")
+        if data_fim is None:
+            st.error("Data de fim inválida. Use o formato dd/mm/aaaa.")
+        if data_inicio and data_fim and data_inicio > data_fim:
+            st.error("A data de início não pode ser posterior à data de fim.")
+        periodo_valido = bool(data_inicio and data_fim and data_inicio <= data_fim)
+        st.session_state.periodo_inicio = data_inicio if periodo_valido else None
+        st.session_state.periodo_fim = data_fim if periodo_valido else None
         with sb_competencia:
-            competencia = st.text_input("Competência (mm/aaaa)", value=data_fim.strftime("%m/%Y"), key="competencia_input")
+            competencia = st.text_input(
+                "Competência (mm/aaaa)", value=data_fim.strftime("%m/%Y") if data_fim else "", key="competencia_input",
+            )
         st.caption("A competência é informada na barra lateral.")
 
-        if st.button("Validar dados", type="primary"):
+        if st.button("Validar dados", type="primary", disabled=not periodo_valido):
             arquivos = st.session_state.arquivos_confirmados
             try:
                 cadastro = carregar_cadastro_colaboradores(arquivos["cadastro"][0])
@@ -641,7 +664,7 @@ if st.session_state.get("arquivos_confirmados"):
 # ===========================================================================
 # ETAPA 3 — Processar o ponto (etapa pesada, só roda sob demanda)
 # ===========================================================================
-if st.session_state.get("preflight_ok"):
+if st.session_state.get("preflight_ok") and st.session_state.get("periodo_inicio"):
     resumo_etapa3 = ""
     if passo > 3:
         resumo_etapa3 = f" — {len(st.session_state.fila_tabela)} exceção(ões) para revisão"
@@ -1071,7 +1094,7 @@ if "apuracao_diaria" in st.session_state:
                 arquivos_gerados.append(exportar_planilha_thales(
                     relacao, st.session_state.apuracao_diaria, decisoes, st.session_state.cadastro_df,
                     st.session_state.competencia_final,
-                    st.session_state.data_inicio_input, st.session_state.data_fim_input, str(pasta_saida),
+                    st.session_state.periodo_inicio, st.session_state.periodo_fim, str(pasta_saida),
                 ))
 
                 arquivos_finais = {}
