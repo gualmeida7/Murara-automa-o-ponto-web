@@ -396,45 +396,9 @@ with st.container(horizontal=True):
         else:
             st.badge(f"{numero}. {nome_etapa}", color="gray")
 
-
-def estilo_situacao(valor: str) -> str:
-    """Cor de fundo translúcida (legível nos modos claro e escuro) para as situações do cruzamento com o Espelho."""
-    if valor.startswith("Provável erro de relógio"):
-        return "background-color: rgba(59, 130, 246, 0.22)"
-    if valor.startswith("Provável falta"):
-        return "background-color: rgba(239, 68, 68, 0.22)"
-    return ""
-
-
-def empresa_do_arquivo(nome_arquivo: str, cadastro: pd.DataFrame) -> str:
-    """Razão social da empresa a que o arquivo gerado pertence (o nome do arquivo traz a razão com '_')."""
-    if nome_arquivo.startswith("planilha_thales"):
-        return "Resumo do fechamento (Planilha do Thales)"
-    for razao in cadastro["razao_social"].dropna().unique():
-        if razao.replace(" ", "_") in nome_arquivo:
-            return razao
-    return "Empresa"
-
-
-# ---------------------------------------------------------------------------
-# Cabeçalho, progresso e áreas reservadas (preenchidas no fim do script, com o estado já atualizado)
-# ---------------------------------------------------------------------------
-st.title("Fechamento de Folha de Pagamento")
-st.caption("Maçaneiro e Gonzaga LTDA · Cianorte Tubos LTDA")
-
-passo = passo_atual()
-with st.container(horizontal=True):
-    for numero, nome_etapa in enumerate(ETAPAS, start=1):
-        if numero < passo:
-            st.badge(f"{numero}. {nome_etapa}", icon=":material/check:", color="green")
-        elif numero == passo:
-            st.badge(f"{numero}. {nome_etapa}", color="primary")
-        else:
-            st.badge(f"{numero}. {nome_etapa}", color="gray")
-
+slot_avisos = st.container()   # logo abaixo das etapas, para o aviso ser visto antes de tudo
 slot_mensagens = st.container()
 slot_metricas = st.container()
-slot_avisos = st.container()
 
 st.sidebar.subheader("Fechamento")
 sb_competencia = st.sidebar.container()
@@ -462,11 +426,18 @@ if passo > 1:
     resumo_arquivos = f" — {qtd_arquivos} arquivo(s) confirmado(s)"
 
 with secao_leitura(f"1. Arquivos{resumo_arquivos}", passo == 1):
-    st.write(
-        "Envie todos os arquivos do fechamento de uma vez: Cadastro de Colaboradores, "
-        "Cartão Ponto e Espelho de Ponto (PDF) ou o AFD (.txt) e, se houver, "
-        "o Banco de Horas do Secullum e/ou a planilha semanal do Adriano. "
-        "O sistema identifica o tipo de cada arquivo."
+    st.markdown(
+        "**Como enviar os arquivos**\n\n"
+        "1. **Cadastro de Colaboradores** (planilha Excel) — obrigatório.\n"
+        "2. **Ponto** — escolha uma das opções abaixo:\n"
+        "    - **Espelho de Ponto** (PDF do Secullum) sozinho; ou\n"
+        "    - **Cartão Ponto** (PDF do Secullum) ou **Arquivo AFD** (.txt); ou\n"
+        "    - **os dois juntos** (Cartão Ponto ou AFD, mais o Espelho de Ponto), o que permite "
+        "uma conferência mais completa entre o que o relógio registrou e o que foi importado.\n"
+        "3. **Opcionais** — Extrato de Consignados (um por empresa), Banco de Horas do Secullum "
+        "e planilha semanal do Adriano, se houver.\n\n"
+        "Arraste todos os arquivos de uma só vez. O sistema identifica o tipo de cada um e o "
+        "mostra na lista abaixo; se algum for reconhecido de forma errada, corrija no campo ao lado."
     )
 
     arquivos_subidos = st.file_uploader(
@@ -515,10 +486,10 @@ with secao_leitura(f"1. Arquivos{resumo_arquivos}", passo == 1):
             tipos_confirmados.setdefault(escolha, []).append(item["caminho"])
 
     # Checklist dos tipos obrigatórios, sempre visível antes de confirmar
-    tem_ponto_ck = "afd" in tipos_confirmados or "cartao_ponto" in tipos_confirmados
+    tem_ponto_ck = any(t in tipos_confirmados for t in ("afd", "cartao_ponto", "espelho_ponto"))
     requisitos = [
         ("Cadastro de Colaboradores", "cadastro" in tipos_confirmados),
-        ("Ponto: Cartão Ponto (PDF) ou Arquivo AFD (.txt)", tem_ponto_ck),
+        ("Ponto: Espelho de Ponto (PDF), Cartão Ponto (PDF) ou Arquivo AFD (.txt)", tem_ponto_ck),
     ]
     if PREENCHER_CONSIGNADO:
         requisitos.append(("Extrato de Consignados", "consignados" in tipos_confirmados))
@@ -529,10 +500,11 @@ with secao_leitura(f"1. Arquivos{resumo_arquivos}", passo == 1):
         else:
             st.markdown(f":orange[:material/pending:] {descricao} — pendente")
 
-    if "espelho_ponto" in tipos_confirmados and "cartao_ponto" not in tipos_confirmados:
+    if "espelho_ponto" in tipos_confirmados and not ("cartao_ponto" in tipos_confirmados or "afd" in tipos_confirmados):
         avisos.append((
-            "warning",
-            "O Espelho de Ponto foi enviado sem o Cartão Ponto correspondente. A conferência cruzada ficará limitada.",
+            "info",
+            "Apenas o Espelho de Ponto foi enviado: ele será usado como fonte das batidas do relógio. "
+            "Para a conferência cruzada, envie também o Cartão Ponto ou o Arquivo AFD.",
         ))
 
     if arquivos_subidos:
@@ -548,22 +520,18 @@ with secao_leitura(f"1. Arquivos{resumo_arquivos}", passo == 1):
             )
 
         if st.button("Confirmar arquivos e continuar", type="primary"):
-            # Slot "ponto": AFD sozinho, Cartão Ponto sozinho, ou Cartão + Espelho (conferência
-            # cruzada completa). O Espelho sem Cartão nem AFD não tem o que cruzar.
-            tem_ponto = "afd" in tipos_confirmados or "cartao_ponto" in tipos_confirmados
+            # Slot "ponto": Espelho sozinho, AFD, Cartão Ponto, ou Cartão/AFD + Espelho (conferência cruzada).
+            tem_ponto = any(t in tipos_confirmados for t in ("afd", "cartao_ponto", "espelho_ponto"))
             obrigatorios = ("cadastro", "consignados") if PREENCHER_CONSIGNADO else ("cadastro",)
             faltando = [t for t in obrigatorios if t not in tipos_confirmados]
             if not tem_ponto:
-                faltando.insert(1, "cartao_ponto")
+                faltando.insert(1, "espelho_ponto")
             duplicados = [t for t in TIPOS_ARQUIVO_UNICO if len(tipos_confirmados.get(t, [])) > 1]
             if faltando:
                 st.error(
                     "Ainda faltam arquivos obrigatórios: "
-        # Estado antigo (date ou string ISO) vira dd/mm/aaaa; padrão = hoje, como antes.
-        for chave in ("data_inicio_input", "data_fim_input"):
-            st.session_state[chave] = formatar_data_br(st.session_state.get(chave, date.today()))
                     + ", ".join(RÓTULO_AMIGÁVEL[t] for t in faltando)
-                    + (" (ou o Arquivo AFD)" if "cartao_ponto" in faltando else "")
+                    + (" (ou o Cartão Ponto, ou o Arquivo AFD)" if "espelho_ponto" in faltando else "")
                     + ". Envie-os e classifique corretamente antes de continuar."
                 )
             elif duplicados:
@@ -591,6 +559,9 @@ with secao_leitura(f"1. Arquivos{resumo_arquivos}", passo == 1):
 if st.session_state.get("arquivos_confirmados"):
     resumo_etapa2 = f" — {resumo_periodo()}" if passo > 2 else ""
     with secao_leitura(f"2. Período e validação{resumo_etapa2}", passo == 2):
+        # Estado antigo (date ou string ISO) vira dd/mm/aaaa; padrão = hoje, como antes.
+        for chave in ("data_inicio_input", "data_fim_input"):
+            st.session_state[chave] = formatar_data_br(st.session_state.get(chave, date.today()))
         col_a, col_b = st.columns(2)
         with col_a:
             texto_inicio = st.text_input(
@@ -722,8 +693,9 @@ if st.session_state.get("preflight_ok") and st.session_state.get("periodo_inicio
 
             with st.spinner("Lendo o ponto e apurando dia a dia. Isto pode levar alguns segundos..."):
                 arquivos = st.session_state.arquivos_confirmados
-                # AFD (.txt) tem prioridade quando enviado; senão usa o Cartão Ponto (PDF).
-                caminho_ponto = (arquivos.get("afd") or arquivos["cartao_ponto"])[0]
+                # AFD (.txt) tem prioridade; depois o Cartão Ponto (PDF); sem nenhum dos dois, o Espelho é a fonte.
+                lista_ponto = arquivos.get("afd") or arquivos.get("cartao_ponto")
+                caminho_ponto = lista_ponto[0] if lista_ponto else None
                 apuracao, fila = rodada_1_gerar_fila_de_excecoes(
                     caminho_ponto, st.session_state.cadastro_df, data_inicio, data_fim,
                     caminho_espelho=arquivos.get("espelho_ponto", [None])[0],
@@ -1166,15 +1138,47 @@ with slot_metricas:
                 text=f"Exceções classificadas: {classificadas_ref} de {total_ref}",
             )
 
+def acao_sugerida(texto: str) -> str | None:
+    """Frase de ação para um aviso conhecido (None se não houver orientação específica)."""
+    if "banco de horas" in texto and "nenhum arquivo" in texto:
+        return (
+            "Na etapa 1, envie o export do Secullum ou a planilha do Adriano com o saldo dessa pessoa; "
+            "ou, se ela não está no banco, desmarque `banco_horas` no cadastro."
+        )
+    if "sem o Cartão Ponto" in texto:
+        return "Na etapa 1, envie também o Cartão Ponto do mesmo período."
+    if "calendário de feriados não tem o ano" in texto:
+        return "Rode `python gerar_feriados.py` para incluir o ano e reinicie o app."
+    if "por previsão" in texto:
+        return "Confira o decreto do ano e, se a data mudou, regere o calendário com `gerar_feriados.py`."
+    return None
+
+
+qtd_atencao_total = sum(1 for nivel, _ in avisos if nivel == "warning")
+
 with slot_avisos:
     if avisos:
-        with st.expander(f"Avisos ({len(avisos)})"):
-            for nivel, texto in avisos:
+        # Atenção (warning) primeiro; sempre aberto e em destaque, não escondido num expander.
+        avisos_ordenados = sorted(avisos, key=lambda a: a[0] != "warning")
+        qtd_atencao = qtd_atencao_total
+        with st.container(border=True):
+            st.markdown(
+                f"#### :material/warning: Atenção — {len(avisos)} aviso(s)"
+                if qtd_atencao
+                else f"#### :material/info: {len(avisos)} informação(ões)"
+            )
+            for nivel, texto in avisos_ordenados:
                 icone = ":material/warning:" if nivel == "warning" else ":material/info:"
                 getattr(st, nivel)(texto, icon=icone)
+                acao = acao_sugerida(texto) if nivel == "warning" else None
+                if acao:
+                    st.caption(f":material/arrow_forward: **O que fazer:** {acao}")
 
 with sb_rascunho:
     st.divider()
+    if qtd_atencao_total:
+        st.badge(f"{qtd_atencao_total} aviso(s) de atenção", icon=":material/warning:", color="orange")
+        st.caption("Veja o quadro no topo da página.")
     st.caption("Rascunho")
     if "fila_tabela" in st.session_state and "competencia_final" in st.session_state:
         classificadas_sb, total_sb = contar_decisoes(st.session_state.fila_tabela)

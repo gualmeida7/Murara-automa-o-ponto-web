@@ -30,6 +30,7 @@ import pandas as pd
 
 from afd_parser import parse_afd
 from cartao_ponto_pdf import dias_para_batidas, parse_cartao_ponto_pdf
+from pdf_espelho_ponto import mapear_para_pis, parse_espelho_pdf
 from validacao import ArquivoInvalidoError
 
 NOME_AMIGAVEL_ARQUIVO_PONTO = "Arquivo de Ponto"
@@ -91,6 +92,31 @@ def escolher_leitor(caminho: Path) -> LeitorPonto:
         f"O {NOME_AMIGAVEL_ARQUIVO_PONTO} ('{caminho}') tem uma extensão não suportada "
         f"('{caminho.suffix or 'sem extensão'}'). Use {', '.join(EXTENSOES_ACEITAS)}."
     )
+
+
+TOLERANCIA_BATIDA_DUPLICADA_MIN = 2
+
+
+def ler_espelho_como_ponto(caminho: str | Path, cadastro: pd.DataFrame) -> ResultadoLeituraPonto:
+    """
+    Usa o Espelho de Ponto (PDF) como UNICA fonte de batidas: as marcacoes brutas
+    do relogio viram `batidas` no mesmo formato do AFD, ja' com o PIS do cadastro.
+    Marcacoes a menos de 2 min uma da outra sao a mesma batida duplicada pelo relogio.
+    """
+    resultado = parse_espelho_pdf(caminho)
+    dias = mapear_para_pis(resultado, cadastro)
+    linhas = [
+        {"pis": str(pis), "data_hora": pd.Timestamp(f"{data} {hora}")}
+        for pis, data, brutas in zip(dias["pis"], dias["data"], dias["batidas_brutas"])
+        for hora in brutas
+    ]
+    batidas = pd.DataFrame(linhas, columns=["pis", "data_hora"])
+    if not batidas.empty:
+        batidas = batidas.sort_values(["pis", "data_hora"]).reset_index(drop=True)
+        intervalo = batidas.groupby("pis")["data_hora"].diff()
+        batidas = batidas[~(intervalo < pd.Timedelta(minutes=TOLERANCIA_BATIDA_DUPLICADA_MIN))]
+    batidas = batidas.assign(tipo_registro="ESPELHO").reset_index(drop=True)
+    return ResultadoLeituraPonto(batidas=batidas, erros_leitura=resultado.avisos)
 
 
 def _identificadores_do_arquivo(resultado: ResultadoLeituraPonto) -> set[str]:

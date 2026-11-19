@@ -35,7 +35,7 @@ import numpy as np
 import pandas as pd
 
 from afd_parser import agrupar_batidas_por_dia
-from leitores_ponto import ler_arquivo_ponto
+from leitores_ponto import ler_arquivo_ponto, ler_espelho_como_ponto
 from pdf_espelho_ponto import mapear_para_pis, parse_espelho_pdf
 from business_rules import (
     Jornada, apurar_periodo, consolidar_mes, gerar_fila_validacao_rh, STATUS_FALTA_PARCIAL,
@@ -380,7 +380,7 @@ def avisos_banco_horas(
 
 
 def rodada_1_gerar_fila_de_excecoes(
-    caminho_ponto: str,
+    caminho_ponto: str | None,
     df_cadastro: pd.DataFrame,
     data_inicio: date,
     data_fim: date,
@@ -408,7 +408,13 @@ def rodada_1_gerar_fila_de_excecoes(
         feriados = carregar_feriados()
         for aviso in avisos_de_cobertura(data_inicio, data_fim):
             print(f"[aviso] {aviso}")
-    resultado_ponto = ler_arquivo_ponto(caminho_ponto, df_cadastro)
+    espelho_e_a_fonte = caminho_ponto is None
+    if espelho_e_a_fonte:
+        if not caminho_espelho:
+            raise ArquivoInvalidoError("Envie o Espelho de Ponto, o Cartão Ponto ou o arquivo AFD.")
+        resultado_ponto = ler_espelho_como_ponto(caminho_espelho, df_cadastro)
+    else:
+        resultado_ponto = ler_arquivo_ponto(caminho_ponto, df_cadastro)
     if resultado_ponto.erros_leitura:
         print(f"[aviso] {len(resultado_ponto.erros_leitura)} aviso(s) na leitura do ponto - ver log.")
 
@@ -429,7 +435,7 @@ def rodada_1_gerar_fila_de_excecoes(
         apuracao.attrs["totais_secullum"] = resultado_ponto.totais_secullum
     fila = gerar_fila_validacao_rh(apuracao)
     fila = _anexar_contexto_secullum(fila, resultado_ponto.espelho_diario)
-    if caminho_espelho:
+    if caminho_espelho and not espelho_e_a_fonte:
         resultado_espelho = parse_espelho_pdf(caminho_espelho)
         batidas_brutas = mapear_para_pis(resultado_espelho, df_cadastro)
         if resultado_espelho.avisos:
