@@ -8,6 +8,7 @@ they fail silently and log errors to fechamento_folha.log.
 
 from __future__ import annotations
 
+import json
 import logging
 import pathlib
 import sqlite3
@@ -53,6 +54,17 @@ CREATE TABLE IF NOT EXISTS decisoes_rh (
     observacao      TEXT NOT NULL DEFAULT '',
     salvo_em        TEXT NOT NULL,
     UNIQUE(competencia, pis, data)
+);
+
+-- Cadastro de Colaboradores editado no sistema: uma linha por versao (aditivo; nada acima e' alterado).
+-- `linhas_json` guarda o cadastro inteiro; a versao mais recente (maior id) e' o cadastro vigente.
+CREATE TABLE IF NOT EXISTS cadastro_versoes (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    enviado_em      TEXT NOT NULL,
+    nome_arquivo    TEXT NOT NULL DEFAULT '',
+    hash_conteudo   TEXT NOT NULL,
+    total_linhas    INTEGER NOT NULL DEFAULT 0,
+    linhas_json     TEXT NOT NULL
 );
 """
 
@@ -218,4 +230,60 @@ def listar_sessoes() -> pd.DataFrame:
         return pd.DataFrame(linhas, columns=colunas)
     except Exception:
         _logger.exception("Falha ao listar sessões")
+        return pd.DataFrame(columns=colunas)
+
+
+# ---------------------------------------------------------------------------------------------
+# Cadastro de Colaboradores editado (versionado por envio/edicao)
+# ---------------------------------------------------------------------------------------------
+def salvar_cadastro(linhas_json: str, nome_arquivo: str, hash_conteudo: str) -> int | None:
+    """
+    Grava uma nova versao do cadastro (JSON de `cadastro_editor.cadastro_para_json`). Se o conteudo for igual ao da
+    versao vigente (mesmo hash), nada e' criado e o id da vigente e' devolvido. Devolve None se o banco falhar.
+    """
+    try:
+        with closing(_conectar()) as con, con:
+            vigente = con.execute(
+                "SELECT id, hash_conteudo FROM cadastro_versoes ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+            if vigente and vigente[1] == hash_conteudo:
+                return int(vigente[0])
+            total = len(json.loads(linhas_json))
+            cur = con.execute(
+                "INSERT INTO cadastro_versoes (enviado_em, nome_arquivo, hash_conteudo, total_linhas, linhas_json) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (_agora(), _txt(nome_arquivo), hash_conteudo, total, linhas_json),
+            )
+            return int(cur.lastrowid)
+    except Exception:
+        _logger.exception("Falha ao salvar o cadastro editado")
+        return None
+
+
+def carregar_cadastro_atual() -> dict | None:
+    """Versao vigente do cadastro: dict com id, enviado_em, nome_arquivo, hash_conteudo, total_linhas, linhas_json."""
+    try:
+        with closing(_conectar()) as con:
+            con.row_factory = sqlite3.Row
+            linha = con.execute(
+                "SELECT id, enviado_em, nome_arquivo, hash_conteudo, total_linhas, linhas_json "
+                "FROM cadastro_versoes ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+        return dict(linha) if linha else None
+    except Exception:
+        _logger.exception("Falha ao carregar o cadastro salvo")
+        return None
+
+
+def listar_versoes_cadastro() -> pd.DataFrame:
+    """Historico de versoes do cadastro (sem o conteudo), da mais recente para a mais antiga."""
+    colunas = ["id", "enviado_em", "nome_arquivo", "hash_conteudo", "total_linhas"]
+    try:
+        with closing(_conectar()) as con:
+            linhas = con.execute(
+                f"SELECT {', '.join(colunas)} FROM cadastro_versoes ORDER BY id DESC"
+            ).fetchall()
+        return pd.DataFrame(linhas, columns=colunas)
+    except Exception:
+        _logger.exception("Falha ao listar versoes do cadastro")
         return pd.DataFrame(columns=colunas)

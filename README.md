@@ -15,6 +15,7 @@ formato exigido pela contabilidade.
 | `banco_horas.py` | Integra o banco de horas do Sidney (relatório Secullum) e do Adriano (planilha semanal paralela) sem afetar os demais colaboradores. |
 | `leitura_arquivos.py` | Leitura única e resiliente de qualquer arquivo de entrada (.xlsx/.xls/.csv), com detecção automática de delimitador e codificação para CSV. |
 | `validacao.py` | Validação defensiva compartilhada — colunas obrigatórias e checagem pré-voo de PIS/matrícula — com a exceção amigável `ArquivoInvalidoError`. |
+| `cadastro_editor.py` | Cadastro de Colaboradores editável: leitura tolerante (aliases, linhas-lixo, cores), validação por linha, adaptador para o pipeline, planilha limpa e diferenças entre o cadastro salvo e uma planilha reenviada. |
 | `pipeline.py` | Orquestra tudo e gera um arquivo `.xlsx` por empresa no layout da "Relação de Valores". |
 | `dashboard_aprovacao.html` | Painel de aprovação — abra no navegador, carregue o CSV de exceções, classifique, exporte a decisão. Não depende de instalar nada. |
 | `tests/teste_banco_dsr.py` | Testes do banco de horas (colunas do cadastro, roteamento, preflight, saldo em hh:mm) e do desconto de DSR (8794) em dias ou em valor. `pytest tests/teste_banco_dsr.py`. |
@@ -83,6 +84,42 @@ encerrar. Não precisa de internet — tudo roda localmente no computador.
 5. **Gerar e baixar** — um clique consolida tudo em memória e libera o
    download do `.xlsx` final por empresa (ou de todos juntos, num `.zip`),
    já com as abas "Contabilidade" e "Conferência RH" formatadas.
+
+### Cadastro de Colaboradores editável (tela dentro do sistema)
+
+Depois de **Confirmar arquivos**, a planilha do cadastro é aberta numa tabela editável (`st.data_editor`,
+linhas podem ser adicionadas e removidas). A planilha enviada **nunca é alterada**; o que se corrige na tela
+passa a ser o cadastro do fechamento. Toda a lógica está em `cadastro_editor.py` (a tela só chama funções).
+
+- **Leitura tolerante** (`ler_cadastro_para_edicao`): reconhece os cabeçalhos reais da cliente (colunas
+  "Cooper Card Assiduidade" → `cooper`; "Alelo Alimentação" e "Ticket Alimentação" → `valor_va` + `beneficio`,
+  a primeira para a empresa `001` e a segunda para a `002`); ignora acento, maiúscula e espaço sobrando no
+  cabeçalho; descarta legendas, anotações e linhas em branco **avisando** ("N linhas ignoradas ... linhas X a Y");
+  normaliza matrícula (sem `14.0`), admissão (dd/mm/aaaa) e centro de custo (texto, mantém o `07`). Admissão digitada
+  como texto mês/dia/ano (`3/13/26`, planilha salva por ferramenta em inglês) é reconhecida pela própria coluna (ano de
+  2 e de 4 dígitos avaliados em separado); data que continue ambígua fica em branco com aviso, nunca é adivinhada.
+- **Cores, só na importação**: verde forte (FF00B050) na coluna do Cooper → `cooper_fixo = sim`; na coluna do vale →
+  `va_fixo = sim`; verde claro (tema 9) em qualquer célula da linha → `va_desconto_manual = sim`. Depois da
+  importação valem as colunas, nunca a cor. Se a leitura das cores falhar, ou se a planilha não trouxer nenhuma cor de preenchimento (por exemplo, reenviada após
+  ser salva por outra ferramenta), as colunas ficam em "não" e a tela avisa.
+- **Validação por linha** (`validar_cadastro`, atualizada a cada edição, citando a matrícula). **Erro bloqueia**
+  o fechamento: razão social, código da empresa, horários ausentes ou inválidos, `dias_trabalho` fora do formato
+  `0,1,2,3,4`, matrícula ou PIS repetidos, valores em R$ negativos ou inválidos. **Aviso não bloqueia**: CNPJ com
+  dígitos inválidos (sugere outro CNPJ válido da mesma empresa e raiz, se existir), PIS igual à matrícula com zeros
+  (só funciona com o Cartão Ponto), entrada/almoço diferentes da maioria da empresa, admissão depois do fim do
+  período, `saida_sexta` ausente, coluna `banco_horas` ausente. A coluna **Situação** (OK / Aviso / Erro) marca cada linha.
+- **Botões**: *Salvar cadastro* (nova versão no SQLite, tabela `cadastro_versoes`, criada de forma aditiva e
+  idempotente; conteúdo idêntico não cria versão), *Baixar cadastro corrigido (.xlsx)* (planilha limpa, cabeçalhos
+  canônicos, pode ser reenviada). *Validar dados* fica desligado enquanto houver erro.
+- **Reenvio da planilha**: o cadastro salvo no sistema é a verdade. Se a planilha nova difere dele, a tela mostra
+  as diferenças por matrícula (colaborador novo, ausente, campo alterado) e só aplica as que forem marcadas
+  em *Aceitar*.
+- `cadastro_para_pipeline(df)` entrega ao `pipeline` o DataFrame com PIS canônico, booleanos, floats e datas.
+  `pipeline.carregar_cadastro_colaboradores` continua existindo (usado por `app_gui.py` e pelos testes) e
+  agora usa a mesma leitura tolerante, mas continua recusando valor inválido em coluna sim/não ou R$ com arquivo,
+  linha e coluna.
+- Ainda **não** implementados (aguardam resposta da cliente): regra do Cooper com mais de 2 h de faltas no mês e o
+  significado do verde claro além de `va_desconto_manual`.
 
 ### Documentos do mês (o que subir e quando mexer em cada um)
 

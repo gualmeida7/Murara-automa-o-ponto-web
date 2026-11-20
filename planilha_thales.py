@@ -120,7 +120,8 @@ def exportar_planilha_thales(
         linha += 1
         rotulo_va = next(
             (str(cad.at[str(m), "beneficio"]) for m in grupo["codigo_folha"]
-             if str(m) in cad.index and "beneficio" in cad.columns and pd.notna(cad.at[str(m), "beneficio"])),
+             if str(m) in cad.index and "beneficio" in cad.columns and pd.notna(cad.at[str(m), "beneficio"])
+             and str(cad.at[str(m), "beneficio"]).strip()),
             CABECALHO_BENEFICIO_PADRAO,
         )
         for col, titulo in enumerate(

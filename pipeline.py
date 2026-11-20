@@ -50,6 +50,7 @@ from validacao import (
     ler_sim_nao,
     ArquivoInvalidoError,
 )
+from cadastro_editor import cadastro_para_pipeline, ler_cadastro_para_edicao, normalizar_cabecalhos
 from leitura_arquivos import ler_arquivo_generico
 from feriados import avisos_de_cobertura, carregar_feriados
 
@@ -128,23 +129,31 @@ def carregar_cadastro_colaboradores(caminho: str) -> pd.DataFrame:
     saem SEMPRE como booleanos, mesmo que o arquivo nao tenha a coluna;
     `valor_dia_dsr` so' existe no resultado se o arquivo a tiver.
     """
-    df = ler_arquivo_generico(caminho, "Cadastro de Colaboradores")
-    verificar_colunas(df, COLUNAS_OBRIGATORIAS_CADASTRO, "Cadastro de Colaboradores", caminho)
-    # canonicalizar_pis (e nao so' strip): o AFD do Secullum traz o PIS com
-    # zero de preenchimento a esquerda (12 digitos) - sem reduzir os dois
-    # lados (cadastro E afd_parser) ao mesmo formato de 11 digitos, nenhuma
-    # batida do AFD real bateria com ninguem aqui.
-    df["pis"] = df["pis"].map(canonicalizar_pis)
-    df[COL_BANCO_HORAS] = _ler_coluna_sim_nao(df, COL_BANCO_HORAS, False, caminho)
-    df[COL_REGISTRA_PONTO] = _ler_coluna_sim_nao(df, COL_REGISTRA_PONTO, True, caminho)
-    if COL_VALOR_DIA_DSR in df.columns:
-        df[COL_VALOR_DIA_DSR] = pd.Series(
-            [
-                converter_valor_monetario(v, f"Cadastro de Colaboradores ('{caminho}'), linha {i + 2}", COL_VALOR_DIA_DSR)
-                for i, v in df[COL_VALOR_DIA_DSR].items()
-            ],
-            index=df.index, dtype=float,
+    # Leitura tolerante (aliases de cabecalho, linhas-lixo descartadas, tipos normalizados); aqui continua
+    # estrita quanto as colunas obrigatorias. Os avisos de linhas ignoradas ficam em `df.attrs["avisos"]`.
+    carga = ler_cadastro_para_edicao(caminho)
+    faltando = [c for c in COLUNAS_OBRIGATORIAS_CADASTRO if c in carga.colunas_ausentes]
+    if faltando:
+        raise ArquivoInvalidoError(
+            f"O arquivo de Cadastro de Colaboradores ('{caminho}') está sem a(s) coluna(s) obrigatória(s): "
+            f"{', '.join(faltando)}. "
+            f"Verifique se este é o arquivo certo, ou se o nome das colunas bate com o esperado."
         )
+    # Aqui o valor invalido em coluna sim/nao ou R$ continua sendo ERRO com arquivo/linha/coluna (a tela de
+    # edicao, ao contrario, avisa e deixa corrigir). A leitura crua e' repetida so' para essa checagem.
+    bruto = ler_arquivo_generico(caminho, "Cadastro de Colaboradores", dtype=object)
+    bruto.columns = normalizar_cabecalhos(bruto.columns)
+    _ler_coluna_sim_nao(bruto, COL_BANCO_HORAS, False, caminho)
+    _ler_coluna_sim_nao(bruto, COL_REGISTRA_PONTO, True, caminho)
+    if COL_VALOR_DIA_DSR in bruto.columns:
+        for i, v in bruto[COL_VALOR_DIA_DSR].items():
+            converter_valor_monetario(v, f"Cadastro de Colaboradores ('{caminho}'), linha {i + 2}", COL_VALOR_DIA_DSR)
+    # canonicalizar_pis (e nao so' strip): o AFD do Secullum traz o PIS com zero de preenchimento a esquerda
+    # (12 digitos) - cadastro e afd_parser precisam estar no mesmo formato de 11 digitos (feito no adaptador).
+    df = cadastro_para_pipeline(carga.df)
+    if COL_VALOR_DIA_DSR in carga.colunas_ausentes:
+        df = df.drop(columns=[COL_VALOR_DIA_DSR])
+    df.attrs["avisos"] = carga.avisos
     return df
 
 

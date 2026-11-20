@@ -36,7 +36,7 @@ def _detectar_delimitador(caminho: Path, encoding: str) -> str | None:
         return None
 
 
-def _ler_csv_resiliente(caminho: Path) -> pd.DataFrame:
+def _ler_csv_resiliente(caminho: Path, dtype=None) -> pd.DataFrame:
     """
     Tenta ler um CSV cruzando codificacoes (utf-8-sig, utf-8, latin-1) com
     delimitadores (virgula, ponto-e-virgula, tab). Usa o Sniffer do Python
@@ -55,7 +55,7 @@ def _ler_csv_resiliente(caminho: Path) -> pd.DataFrame:
 
         for delimitador in candidatos:
             try:
-                df = pd.read_csv(caminho, encoding=encoding, sep=delimitador, engine="python")
+                df = pd.read_csv(caminho, encoding=encoding, sep=delimitador, engine="python", dtype=dtype)
             except Exception as e:
                 ultimo_erro = e
                 continue
@@ -76,7 +76,7 @@ def _ler_csv_resiliente(caminho: Path) -> pd.DataFrame:
     )
 
 
-def ler_arquivo_generico(caminho: str, nome_amigavel_arquivo: str, sheet_name: str | int = 0) -> pd.DataFrame:
+def ler_arquivo_generico(caminho: str, nome_amigavel_arquivo: str, sheet_name: str | int = 0, dtype=None) -> pd.DataFrame:
     """
     Le um arquivo de entrada (.xlsx, .xls ou .csv) e devolve um DataFrame
     com o cabecalho ja' normalizado (nomes de coluna em minusculo, sem
@@ -85,7 +85,7 @@ def ler_arquivo_generico(caminho: str, nome_amigavel_arquivo: str, sheet_name: s
     estiver corrompido/aberto em outro programa, ou vier vazio.
 
     `sheet_name` so' se aplica a arquivos Excel (.xlsx/.xls); e' ignorado
-    para CSV.
+    para CSV. `dtype=object` mantem o conteudo como digitado (ex.: "07" nao vira 7).
     """
     caminho_path = Path(caminho)
     if not caminho_path.exists():
@@ -97,9 +97,9 @@ def ler_arquivo_generico(caminho: str, nome_amigavel_arquivo: str, sheet_name: s
     sufixo = caminho_path.suffix.lower()
     try:
         if sufixo in (".xlsx", ".xls"):
-            df = pd.read_excel(caminho_path, sheet_name=sheet_name)
+            df = pd.read_excel(caminho_path, sheet_name=sheet_name, dtype=dtype)
         elif sufixo == ".csv":
-            df = _ler_csv_resiliente(caminho_path)
+            df = _ler_csv_resiliente(caminho_path, dtype)
         else:
             raise ArquivoInvalidoError(
                 f"O arquivo de {nome_amigavel_arquivo} ('{caminho}') tem uma extensão não "

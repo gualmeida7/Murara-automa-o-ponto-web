@@ -55,6 +55,57 @@ Colunas opcionais usadas só na **Planilha do Thales** (em branco = célula vazi
 
 `desconto_folha`, `observacao` e `nota_rodape` mudam todo mês: atualize antes de processar.
 
+Colunas que a tela entende além das acima (também podem ser marcadas diretamente na tabela):
+
+| Coluna | O que escrever | Exemplo |
+|---|---|---|
+| va_fixo | sim/não: vale fixo, não sofre desconto por falta | sim |
+| cooper_fixo | sim/não: Cooper fixa todo mês | sim |
+| va_desconto_manual | sim/não: o desconto do vale é feito manualmente | não |
+
+Se a sua planilha usa os títulos "Cooper Card Assiduidade", "Alelo Alimentação" e "Ticket Alimentação", o sistema
+os reconhece: o valor de "Alelo Alimentação" vale para a empresa de código 001 e o de "Ticket Alimentação" para a
+002. As cores da planilha (verde forte = valor fixo; verde claro = desconto manual) são lidas apenas no envio e
+transformadas nas colunas acima; depois disso, valem as colunas.
+
+### Revisar o cadastro dentro do sistema
+
+Ao confirmar os arquivos, o cadastro aparece numa tabela na própria tela. Nada é alterado na sua planilha original.
+
+- Corrija qualquer célula, acrescente linhas no fim da tabela ou apague linhas. Use os botões acima da tabela
+  (Todas, Identificação, Jornada, Benefícios, Opcionais) para ver menos colunas por vez.
+- A coluna **Situação** mostra **OK**, **Aviso** ou **Erro** para cada colaborador. O quadro logo abaixo da tabela
+  explica cada ocorrência, sempre indicando a **matrícula**.
+- **Erro** impede o fechamento: o botão "Validar dados" só libera quando não houver nenhum erro.
+- **Aviso** não impede; serve para você conferir.
+- **Salvar cadastro** guarda o cadastro no sistema. Na próxima vez, se você enviar outra planilha, o sistema
+  mostra o que mudou (colaborador novo, ausente ou campo diferente) e só aplica o que você marcar em **Aceitar**.
+  Sem marcar, vale o que já está salvo no sistema.
+- **Baixar cadastro corrigido (.xlsx)** entrega uma planilha limpa, com os nomes de coluna corretos e sem legendas ou
+  linhas em branco, que pode ser usada nos próximos meses.
+
+**Erros (precisam ser corrigidos)**
+
+| Mensagem | O que fazer |
+|---|---|
+| Razão social, código da empresa ou horário não preenchido | Preencha o campo indicado para aquela matrícula |
+| Hora inválida | Escreva no formato hh:mm, por exemplo 08:00 |
+| Dias de trabalho fora do formato | Use números de 0 a 6 separados por vírgula, por exemplo 0,1,2,3,4 (0 = segunda) |
+| Matrícula ou PIS repetido | Cada colaborador precisa de matrícula e PIS próprios; corrija ou apague a linha repetida |
+| Valor negativo ou inválido | Escreva um valor em R$ maior ou igual a zero, por exemplo 200,00 |
+
+**Avisos (conferir)**
+
+| Mensagem | O que significa |
+|---|---|
+| CNPJ com dígitos inválidos | O CNPJ digitado não passa na conferência. Se existir outro CNPJ válido da mesma empresa, ele aparece como sugestão |
+| PIS igual à matrícula com zeros | Funciona somente com o Cartão Ponto (PDF). Com o arquivo AFD, o PIS precisa ser o real |
+| Entrada/almoço diferentes da maioria da empresa | Confirme se o horário daquele colaborador realmente é diferente |
+| Admissão depois do fim do período | O colaborador não terá dias apurados neste fechamento |
+| Saída de sexta não preenchida | A sexta usará a mesma saída dos outros dias |
+| Coluna banco_horas ausente | Ninguém será tratado como colaborador em banco de horas |
+| N linhas ignoradas | Linhas sem matrícula/PIS, legendas e anotações da planilha não foram lidas; confira se não era um colaborador |
+
 ## Passo a passo
 
 **1. Abrir o sistema.** No navegador, entre no endereço que o responsável de TI informar (normalmente `http://localhost:8501`). [Print: tela inicial]
@@ -119,7 +170,7 @@ Linha em branco conta como falta injustificada (é a opção mais segura). Seu p
 | "PIS/matrícula não encontrado no cadastro" | Anote o arquivo e o número mostrados, corrija o cadastro (ou o número) e envie de novo |
 | Um arquivo foi reconhecido como tipo errado | Troque o tipo na lista ao lado do arquivo |
 | Erro no extrato de consignado | Uma matrícula do extrato não está no cadastro. Inclua ou corrija e envie de novo |
-| O cadastro é recusado | Confira se os nomes das colunas estão exatamente como na tabela, sem espaços sobrando |
+| O cadastro tem erros na tela | Corrija os campos indicados na tabela (a mensagem cita a matrícula). Enquanto houver erro, "Validar dados" fica desligado |
 | Alguém aparece com o mês inteiro de faltas | Provavelmente não tem batidas. Use o aviso da etapa 3 e depois corrija o cadastro |
 | Um desligado aparece no relatório | Tire-o do cadastro (ou use "Desligado" no aviso da etapa 3) |
 | A página foi atualizada ou fechada sem querer | Abra o sistema de novo; suas decisões da etapa 4 foram salvas como rascunho |

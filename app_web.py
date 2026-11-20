@@ -45,6 +45,11 @@ from pipeline import (
     UNIDADES_DSR,
 )
 import db_sessao
+from cadastro_editor import (
+    BENEFICIOS_PADRAO, COLUNAS_CANONICAS, SECOES, aplicar_aceites, cadastro_de_json, cadastro_para_json,
+    cadastro_para_pipeline, cadastro_para_xlsx_bytes, hash_do_cadastro, ler_cadastro_para_edicao,
+    normalizar_cabecalhos, normalizar_para_edicao, reconciliar_com_salvo, situacao_por_linha, tem_erros, validar_cadastro,
+)
 from datas_br import formatar_data_br, parse_data_br
 from planilha_thales import exportar_planilha_thales
 from feriados import avisos_de_cobertura, carregar_feriados, descrever_feriados
@@ -164,7 +169,7 @@ def classificar_arquivo(caminho: str) -> str:
     except ArquivoInvalidoError:
         return "desconhecido"
 
-    colunas = set(df.columns)
+    colunas = set(df.columns) | set(normalizar_cabecalhos(df.columns))   # P/Q/R e variantes de cabeçalho
     if set(COLUNAS_OBRIGATORIAS_CADASTRO).issubset(colunas):
         return "cadastro"
     if {"horas_extras", "horas_debito"}.issubset(colunas):
@@ -544,14 +549,175 @@ with secao_leitura(f"1. Arquivos{resumo_arquivos}", passo == 1):
             elif "banco_adriano" in tipos_confirmados and not pis_adriano.strip():
                 st.error("A planilha do Adriano foi enviada, mas o PIS/matrícula dele não foi informado.")
             else:
-                st.session_state.arquivos_confirmados = tipos_confirmados
                 st.session_state.pis_adriano = pis_adriano.strip()
                 # limpa qualquer processamento anterior, já que os arquivos mudaram
                 for chave in ("cadastro_df", "preflight_ok", "apuracao_diaria", "fila_tabela", "arquivos_finais",
-                              "feriados_periodo", "avisos_feriados", "avisos_banco_horas"):
+                              "feriados_periodo", "avisos_feriados", "avisos_banco_horas", "cadastro_hash_validado"):
                     st.session_state.pop(chave, None)
-                agendar_mensagem("success", "Arquivos confirmados. Defina o período na etapa 2.")
+                try:
+                    carga = ler_cadastro_para_edicao(tipos_confirmados["cadastro"][0])
+                except ArquivoInvalidoError as e:
+                    st.error(f"**Não foi possível ler o Cadastro de Colaboradores:**\n\n{e}")
+                    st.stop()
+                st.session_state.arquivos_confirmados = tipos_confirmados
+                salvo = db_sessao.carregar_cadastro_atual()
+                trabalho, diferencas = reconciliar_com_salvo(
+                    carga.df, cadastro_de_json(salvo["linhas_json"]) if salvo else None,
+                )
+                st.session_state.update(
+                    cadastro_trabalho=trabalho, cadastro_editado=trabalho, cadastro_enviado=carga.df,
+                    cadastro_diferencas=diferencas, cadastro_avisos_carga=carga.avisos,
+                    cadastro_nome_arquivo=Path(tipos_confirmados["cadastro"][0]).name,
+                    cadastro_versao_editor=st.session_state.get("cadastro_versao_editor", 0) + 1,
+                )
+                st.session_state.pop("cadastro_situacao_exibida", None)
+                agendar_mensagem("success", "Arquivos confirmados. Revise o cadastro e defina o período na etapa 2.")
                 st.rerun()
+
+# ===========================================================================
+# Cadastro de colaboradores - tela editavel (a planilha enviada e' so' a proposta; o cadastro do sistema vale)
+# ===========================================================================
+st.session_state.cadastro_bloqueado = False
+if st.session_state.get("arquivos_confirmados") and "cadastro_trabalho" in st.session_state:
+    base = st.session_state.cadastro_trabalho
+    editado_ant = st.session_state.cadastro_editado
+    versao_editor = st.session_state.cadastro_versao_editor
+    with st.expander("Cadastro de colaboradores — revisar, corrigir e salvar", expanded=passo <= 2):
+        st.caption(
+            "A planilha enviada não é alterada. O que for corrigido aqui passa a valer para o fechamento "
+            "e pode ser salvo no sistema ou baixado em planilha limpa."
+        )
+        for aviso_carga in st.session_state.cadastro_avisos_carga:
+            st.warning(aviso_carga, icon=":material/warning:")
+
+        # Diferencas entre a planilha reenviada e o cadastro ja' salvo: nada e' sobrescrito sem aceite.
+        diferencas = st.session_state.cadastro_diferencas
+        if diferencas:
+            with st.container(border=True):
+                st.markdown(
+                    f"**A planilha enviada difere do cadastro salvo no sistema ({len(diferencas)} diferença(s)).** "
+                    "Por padrão vale o cadastro do sistema; marque o que deseja aceitar da planilha."
+                )
+                rotulo_tipo = {"novo": "Colaborador novo na planilha", "removido": "Ausente na planilha", "alterado": "Campo alterado"}
+                quadro = pd.DataFrame([
+                    {"aceitar": False, "matricula": d.matricula, "diferença": rotulo_tipo[d.tipo], "campo": d.campo,
+                     "no sistema": d.valor_salvo, "na planilha": d.valor_novo}
+                    for d in diferencas
+                ])
+                escolha = st.data_editor(
+                    quadro, hide_index=True, key=f"editor_diferencas_{versao_editor}",
+                    disabled=["matricula", "diferença", "campo", "no sistema", "na planilha"],
+                    column_config={"aceitar": st.column_config.CheckboxColumn("Aceitar")},
+                )
+                col_a, col_b = st.columns(2)
+                if col_a.button("Aplicar os itens aceitos", disabled=not escolha["aceitar"].any()):
+                    aceitas = {d.chave for d, ok in zip(diferencas, escolha["aceitar"]) if ok}
+                    novo = aplicar_aceites(editado_ant, st.session_state.cadastro_enviado, aceitas)
+                    st.session_state.update(
+                        cadastro_trabalho=novo, cadastro_editado=novo, cadastro_versao_editor=versao_editor + 1,
+                        cadastro_diferencas=[d for d in diferencas if d.chave not in aceitas],
+                    )
+                    st.session_state.pop("cadastro_situacao_exibida", None)
+                    st.rerun()
+                if col_b.button("Manter o cadastro do sistema (dispensar diferenças)"):
+                    st.session_state.cadastro_diferencas = []
+                    st.rerun()
+
+        secao_escolhida = st.segmented_control(
+            "Seção", ["Todas", *SECOES], default="Todas", key="cadastro_secao", label_visibility="collapsed",
+        ) or "Todas"
+        colunas_visiveis = (
+            COLUNAS_CANONICAS if secao_escolhida == "Todas"
+            else ["matricula", "nome", *[c for c in SECOES[secao_escolhida] if c not in ("matricula", "nome")]]
+        )
+        exibida = st.session_state.get("cadastro_situacao_exibida")
+        tabela = base.copy()
+        tabela.insert(0, "situacao", exibida.reindex(tabela.index).fillna("") if exibida is not None else "")
+        opcoes_beneficio = sorted(set(BENEFICIOS_PADRAO) | {b for b in base["beneficio"] if b})
+        horas = r"^([01]?\d|2[0-3]):[0-5]\d$"
+        config = {
+            "situacao": st.column_config.TextColumn("Situação", disabled=True, width="small", pinned=True),
+            "matricula": st.column_config.TextColumn("Matrícula", pinned=True),
+            "nome": st.column_config.TextColumn("Nome"),
+            "pis": st.column_config.TextColumn("PIS"),
+            "codigo_empresa": st.column_config.TextColumn("Cód. empresa"),
+            "razao_social": st.column_config.TextColumn("Razão social"),
+            "cnpj": st.column_config.TextColumn("CNPJ"),
+            "centro_custo": st.column_config.TextColumn("Centro de custo"),
+            **{c: st.column_config.TextColumn(r, help="hh:mm, ex.: 08:00", validate=horas, width="small")
+               for c, r in (("entrada", "Entrada"), ("saida_almoco", "Saída almoço"), ("retorno_almoco", "Retorno almoço"),
+                            ("saida", "Saída"), ("saida_sexta", "Saída sexta"))},
+            "dias_trabalho": st.column_config.TextColumn("Dias de trabalho", help="0=segunda ... 6=domingo, ex.: 0,1,2,3,4"),
+            "admissao": st.column_config.DateColumn("Admissão", format="DD/MM/YYYY"),
+            "beneficio": st.column_config.SelectboxColumn("Vale", options=opcoes_beneficio),
+            "valor_va": st.column_config.NumberColumn("Valor do vale", format="R$ %.2f", min_value=0.0),
+            "va_fixo": st.column_config.CheckboxColumn("Vale fixo", help="Fixo: não sofre o desconto de 1/30 por falta."),
+            "va_desconto_manual": st.column_config.CheckboxColumn("Vale c/ desconto manual"),
+            "cooper": st.column_config.NumberColumn("Cooper", format="R$ %.2f", min_value=0.0),
+            "cooper_fixo": st.column_config.CheckboxColumn("Cooper fixo"),
+            "desconto_folha": st.column_config.NumberColumn("Desconto em folha", format="R$ %.2f", min_value=0.0),
+            "banco_horas": st.column_config.CheckboxColumn("Banco de horas"),
+            "registra_ponto": st.column_config.CheckboxColumn("Registra ponto"),
+            "valor_dia_dsr": st.column_config.NumberColumn("Valor do dia de DSR", format="R$ %.2f", min_value=0.0),
+            "observacao": st.column_config.TextColumn("Observação"),
+            "nota_rodape": st.column_config.TextColumn("Nota de rodapé"),
+        }
+        retorno = st.data_editor(
+            tabela, num_rows="dynamic", hide_index=True, key=f"editor_cadastro_{versao_editor}",
+            column_order=["situacao", *colunas_visiveis], column_config=config, disabled=["situacao"],
+        )
+        editado = normalizar_para_edicao(retorno.drop(columns=["situacao"]))
+        st.session_state.cadastro_editado = editado
+        problemas = validar_cadastro(editado, st.session_state.get("periodo_fim"))
+        st.session_state.cadastro_bloqueado = tem_erros(problemas)
+
+        erros = [p for p in problemas if p.severidade == "erro"]
+        avisos_cad = [p for p in problemas if p.severidade == "aviso"]
+        if erros:
+            st.error(f"**{len(erros)} erro(s) impedem o fechamento.** Corrija-os na tabela acima.", icon=":material/error:")
+            st.dataframe(pd.DataFrame([{"Matrícula": p.matricula, "Campo": p.campo, "Problema": p.mensagem} for p in erros]),
+                         hide_index=True)
+        else:
+            st.success("Nenhum erro bloqueante no cadastro.", icon=":material/check_circle:")
+        if avisos_cad:
+            with st.expander(f"{len(avisos_cad)} aviso(s) — não bloqueiam"):
+                st.dataframe(pd.DataFrame([{"Matrícula": p.matricula, "Campo": p.campo, "Aviso": p.mensagem}
+                                           for p in avisos_cad]), hide_index=True)
+
+        col_salvar, col_baixar = st.columns(2)
+        if col_salvar.button("Salvar cadastro", icon=":material/save:"):
+            id_versao = db_sessao.salvar_cadastro(
+                cadastro_para_json(editado), st.session_state.cadastro_nome_arquivo, hash_do_cadastro(editado),
+            )
+            if id_versao is None:
+                st.error("Não foi possível salvar o cadastro no banco de dados.")
+            else:
+                st.success(f"Cadastro salvo (versão {id_versao}, {len(editado)} colaborador(es)).")
+        col_baixar.download_button(
+            "Baixar cadastro corrigido (.xlsx)", data=cadastro_para_xlsx_bytes(editado),
+            file_name="cadastro_corrigido.xlsx", icon=":material/download:",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+
+        # Coluna "Situacao": atualizada (uma vez) quando as edicoes mudam o resultado da validacao.
+        nova_situacao = situacao_por_linha(retorno, problemas)
+        # Trava: no máximo UM rerun seguido, para nunca entrar em laço se o estado do editor oscilar.
+        if exibida is None or not nova_situacao.equals(exibida):
+            st.session_state.cadastro_situacao_exibida = nova_situacao
+            if not st.session_state.pop("_situacao_rerun", False):
+                st.session_state._situacao_rerun = True
+                st.rerun()
+        else:
+            st.session_state.pop("_situacao_rerun", None)
+
+    # O cadastro do sistema e' a verdade: se mudou depois da validacao, a validacao deixa de valer.
+    hash_validado = st.session_state.get("cadastro_hash_validado")
+    if hash_validado and hash_validado != hash_do_cadastro(st.session_state.cadastro_editado):
+        for chave in ("preflight_ok", "cadastro_df", "apuracao_diaria", "fila_tabela", "arquivos_finais", "cadastro_hash_validado"):
+            st.session_state.pop(chave, None)
+        limpar_estado_editor()
+        agendar_mensagem("warning", "O cadastro foi alterado depois da validação. Valide os dados de novo (etapa 2).")
+        st.rerun()
 
 # ===========================================================================
 # ETAPA 2 — Período + checagem pré-voo instantânea
@@ -590,10 +756,13 @@ if st.session_state.get("arquivos_confirmados"):
             )
         st.caption("A competência é informada na barra lateral.")
 
-        if st.button("Validar dados", type="primary", disabled=not periodo_valido):
+        if st.session_state.get("cadastro_bloqueado"):
+            st.error("Há erros no cadastro de colaboradores. Corrija-os na tabela de cadastro antes de validar os dados.")
+        if st.button("Validar dados", type="primary",
+                     disabled=not periodo_valido or bool(st.session_state.get("cadastro_bloqueado"))):
             arquivos = st.session_state.arquivos_confirmados
             try:
-                cadastro = carregar_cadastro_colaboradores(arquivos["cadastro"][0])
+                cadastro = cadastro_para_pipeline(st.session_state.cadastro_editado)
                 consignados = (
                     carregar_consignados(arquivos["consignados"], cadastro=cadastro)
                     if PREENCHER_CONSIGNADO and "consignados" in arquivos else None
@@ -618,6 +787,7 @@ if st.session_state.get("arquivos_confirmados"):
                 st.error(f"**Não foi possível continuar — há um problema nos dados:**\n\n{e}")
             else:
                 st.session_state.preflight_ok = True
+                st.session_state.cadastro_hash_validado = hash_do_cadastro(st.session_state.cadastro_editado)
                 st.session_state.cadastro_df = cadastro
                 st.session_state.consignados_df = consignados
                 st.session_state.banco_horas_df = consolidar_banco_horas(
