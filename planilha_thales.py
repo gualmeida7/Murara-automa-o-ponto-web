@@ -10,6 +10,9 @@ ponto vem de colunas OPCIONAIS do Cadastro de Colaboradores (vazias = celula em 
 
     centro_custo   texto livre do CC (ex.: "07 e 25")
     valor_va       valor mensal do vale (Alelo/Ticket) - R$
+    va_fixo        sim/nao - vale fixo: nao sofre o desconto de 1/30 por falta
+    va_desconto_manual  sim/nao - verde claro da cliente: o desconto do vale e' lancado a mao; o valor sai
+                   cheio e, se houve falta injustificada, a Observacao avisa quantos dias
     beneficio      nome do vale no cabecalho da empresa (padrao "Alelo Cartão"; ex.: "Ticket ")
     cooper         valor mensal da Cooper - R$
     desconto_folha desconto em folha do mes - R$
@@ -48,6 +51,10 @@ def _numero(valor) -> float | None:
     if valor is None or pd.isna(valor) or str(valor).strip() == "":
         return None
     return float(str(valor).replace("R$", "").replace(".", "").replace(",", ".")) if isinstance(valor, str) else float(valor)
+
+
+def _verdadeiro(valor) -> bool:
+    return valor is not None and not pd.isna(valor) and bool(valor)
 
 
 def detalhe_faltas(apuracao: pd.DataFrame, decisoes: pd.DataFrame | None) -> dict[str, dict[str, list]]:
@@ -148,7 +155,13 @@ def exportar_planilha_thales(
                 if admissao and (admissao.year, admissao.month) == (ano, mes):
                     ultimo = (pd.Timestamp(ano, mes, 1) + pd.offsets.MonthEnd(0)).day
                     valor_va = valor_dia_va * min(30, ultimo - admissao.day + 1)
-                valor_va = round(valor_va - valor_dia_va * int(p.get("_dias_desconto_va", 0) or 0), 2)
+                # va_fixo (verde forte da cliente): valor fixo, nunca sofre o desconto de 1/30 por falta.
+                dias_calculados = int(p.get("_dias_desconto_va", 0) or 0)
+                manual = _verdadeiro(ficha.get("va_desconto_manual")) and not _verdadeiro(ficha.get("va_fixo"))
+                dias_desconto = 0 if _verdadeiro(ficha.get("va_fixo")) or manual else dias_calculados
+                if manual and dias_calculados:
+                    obs.append(f"*Desconto do vale a lançar manualmente ({dias_calculados} dia(s) de falta sem justificativa)")
+                valor_va = round(valor_va - valor_dia_va * dias_desconto, 2)
             if admissao and (admissao.year, admissao.month) == (ano, mes):
                 obs.append(f"*Experiencia (Admitido em {admissao:%d/%m/%Y})")
             saldo = p.get(COD_BANCO)

@@ -116,3 +116,50 @@ def test_planilha_do_thales_no_modelo_da_cliente():
     assert beto[8] == 576 and beto[10] == "*Experiencia (Admitido em 14/10/2026)"    # 18/30 do VA (14 a 31/10)
     assert ws["I8"].value == "=SUM(I6:I7)" and ws["J8"].value == "=SUM(J6:J7)"
     assert ws["B9"].value == "Ana: atestado em 28/05, detenção desde 24/06" and ws["B10"].value is None
+
+
+def _planilha_thales_de(cadastro_linhas: list[dict], pasta: Path):
+    """Ana falta 05/10 (1 dia inteiro), Beto idem; devolve a worksheet da Planilha do Thales."""
+    from cadastro_editor import cadastro_para_pipeline, normalizar_para_edicao
+
+    cad = cadastro_para_pipeline(normalizar_para_edicao(pd.DataFrame(cadastro_linhas)))
+    dias = [d for d in pd.date_range("2026-10-05", "2026-10-09").date if d != date(2026, 10, 5)]
+    bat = pd.DataFrame([
+        {"pis": pis, "data": d, "batidas": _batidas(d, "07:30", "12:00", "13:00", "16:30" if d.weekday() == 4 else "17:30")}
+        for pis in cad["pis"] for d in dias
+    ])
+    jornadas = {pis: Jornada(time(7, 30), time(12), time(13), time(17, 30), {0, 1, 2, 3, 4}, saida_sexta=time(16, 30))
+                for pis in cad["pis"]}
+    ap = apurar_periodo(bat, jornadas, date(2026, 10, 5), date(2026, 10, 9), feriados={})
+    rel = rodada_2_gerar_relacao_de_valores(ap, cad, None, consolidar_banco_horas(cad["pis"].tolist(), None, None), None, "10/2026")
+    from openpyxl import load_workbook
+    return load_workbook(exportar_planilha_thales(rel, ap, None, cad, "10/2026", date(2026, 9, 26), date(2026, 10, 25), str(pasta))).active
+
+
+def test_va_fixo_nao_leva_desconto_de_1_30_e_vale_vem_da_empresa(tmp_path):
+    base = dict(codigo_empresa="002", razao_social="EMPRESA B LTDA", entrada="07:30", saida_almoco="12:00",
+                retorno_almoco="13:00", saida="17:30", dias_trabalho="0,1,2,3,4", saida_sexta="16:30",
+                admissao="01/01/2020", valor_va=900, beneficio="Ticket")
+    ws = _planilha_thales_de([
+        dict(base, pis="1", matricula="1", nome="ANA", va_fixo=False),
+        dict(base, pis="2", matricula="2", nome="BETO", va_fixo=True),
+    ], tmp_path)
+    assert [c.value for c in ws[5]][8] == "Ticket"
+    assert [c.value for c in ws[6]][8] == 870     # 900 - 1/30 (falta em 05/10)
+    assert [c.value for c in ws[7]][8] == 900     # fixo: sem desconto
+
+
+def test_vale_com_desconto_manual_sai_cheio_com_aviso_e_cooper_fixo_nao_muda(tmp_path):
+    base = dict(codigo_empresa="002", razao_social="EMPRESA B LTDA", entrada="07:30", saida_almoco="12:00",
+                retorno_almoco="13:00", saida="17:30", dias_trabalho="0,1,2,3,4", saida_sexta="16:30",
+                admissao="01/01/2020", valor_va=900, beneficio="Ticket", cooper=200)
+    ws = _planilha_thales_de([
+        dict(base, pis="1", matricula="1"),
+        dict(base, pis="2", matricula="2", va_desconto_manual=True, cooper_fixo=True),
+        dict(base, pis="3", matricula="3", va_desconto_manual=True, va_fixo=True),
+    ], tmp_path)
+    comum, manual, fixo_e_manual = ([c.value for c in ws[r]] for r in (6, 7, 8))
+    assert comum[8] == 870 and comum[10] is None                       # desconto automatico de 1/30
+    assert manual[8] == 900 and "lançar manualmente (1 dia(s)" in manual[10]   # cheio + aviso
+    assert manual[9] == 200                                              # Cooper fixo: valor inalterado
+    assert fixo_e_manual[8] == 900 and fixo_e_manual[10] is None         # fixo vence: sem desconto e sem aviso

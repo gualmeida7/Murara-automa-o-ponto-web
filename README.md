@@ -409,6 +409,9 @@ Nenhuma é obrigatória: um cadastro antigo, sem elas, funciona exatamente como 
 | `banco_horas` | `não` | O colaborador está no banco de horas (veja "Banco de horas" abaixo). |
 | `registra_ponto` | `sim` | O colaborador usa o relógio de ponto. `não` = fica fora da apuração. |
 | `valor_dia_dsr` | — | Valor em R$ de um dia de DSR. Só é usado com o 8794 "em valor". Aceita `62,50`, `R$ 62,50` ou número. |
+| `va_fixo` | `não` | Vale fixo (verde forte na planilha da cliente): não sofre o desconto de 1/30 por falta na Planilha do Thales. |
+| `cooper_fixo` | `não` | Cooper fixa (verde forte): nunca será zerada. A regra das 2 h de faltas ainda não existe (pendente de resposta da cliente); o valor sai sempre como cadastrado. |
+| `va_desconto_manual` | `não` | Linha em verde claro: o desconto do vale é alterado à mão. Na Planilha do Thales o vale sai cheio e a Observação avisa quantos dias de falta sem justificativa devem ser descontados à mão (`va_fixo` vence: sem desconto e sem aviso). |
 
 `banco_horas` e `registra_ponto` aceitam `sim`, `não`/`nao`, `s`, `n`, `1`, `0`, `true`, `false` e `x`
 (sem diferenciar maiúsculas nem acento). Qualquer outro valor interrompe o fechamento com uma mensagem
