@@ -152,6 +152,7 @@ Linha em branco conta como falta injustificada (é a opção mais segura). Seu p
 | Entrou ou saiu do banco de horas | Mude `banco_horas` |
 | Funcionário que não bate ponto | Coloque `registra_ponto = não` |
 | Novo empréstimo consignado | Nada a mudar no cadastro; ele vem no extrato do mês |
+| Colaborador desligado (consignado) | Colaborador desligado: basta retirá-lo do cadastro. Se o extrato de consignados ainda listar essa matrícula, o sistema ignora e avisa na tela |
 | Mudou de empresa | Atualize `codigo_empresa` e `razao_social` |
 
 ## O que o sistema já faz por você
@@ -169,7 +170,7 @@ Linha em branco conta como falta injustificada (é a opção mais segura). Seu p
 | A página não abre | Veja se o sistema está ligado (peça ao responsável de TI) e se o endereço está certo |
 | "PIS/matrícula não encontrado no cadastro" | Anote o arquivo e o número mostrados, corrija o cadastro (ou o número) e envie de novo |
 | Um arquivo foi reconhecido como tipo errado | Troque o tipo na lista ao lado do arquivo |
-| Erro no extrato de consignado | Uma matrícula do extrato não está no cadastro. Inclua ou corrija e envie de novo |
+| Aviso "Consignado ignorado para a(s) matrícula(s)..." | A matrícula está no extrato, mas não no cadastro. Se a pessoa foi desligada, não precisa fazer nada. Se não foi, corrija a matrícula no extrato ou inclua no cadastro e envie de novo |
 | O cadastro tem erros na tela | Corrija os campos indicados na tabela (a mensagem cita a matrícula). Enquanto houver erro, "Validar dados" fica desligado |
 | Alguém aparece com o mês inteiro de faltas | Provavelmente não tem batidas. Use o aviso da etapa 3 e depois corrija o cadastro |
 | Um desligado aparece no relatório | Tire-o do cadastro (ou use "Desligado" no aviso da etapa 3) |

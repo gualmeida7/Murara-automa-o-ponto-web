@@ -102,7 +102,7 @@ passa a ser o cadastro do fechamento. Toda a lógica está em `cadastro_editor.p
   `va_fixo = sim`; verde claro (tema 9) em qualquer célula da linha → `va_desconto_manual = sim`. Depois da
   importação valem as colunas, nunca a cor. Se a leitura das cores falhar, ou se a planilha não trouxer nenhuma cor de preenchimento (por exemplo, reenviada após
   ser salva por outra ferramenta), as colunas ficam em "não" e a tela avisa.
-- **Validação por linha** (`validar_cadastro`, atualizada a cada edição, citando a matrícula). **Erro bloqueia**
+- **Validação por linha** (`validar_cadastro`, atualizada a cada edição, citando a matrícula e, para quem veio da planilha enviada, a linha dela: "Matrícula 14 (linha 21 da planilha): ..."). **Erro bloqueia**
   o fechamento: razão social, código da empresa, horários ausentes ou inválidos, `dias_trabalho` fora do formato
   `0,1,2,3,4`, matrícula ou PIS repetidos, valores em R$ negativos ou inválidos. **Aviso não bloqueia**: CNPJ com
   dígitos inválidos (sugere outro CNPJ válido da mesma empresa e raiz, se existir), PIS igual à matrícula com zeros
@@ -143,10 +143,15 @@ Quando algo muda nos colaboradores, a regra é **mexer no cadastro, não nos out
 - **Admitido:** nova linha no cadastro (PIS e matrícula iguais aos do Secullum e dos consignados).
 - **Desligado:** apagar a linha do cadastro antes do fechamento seguinte. Se ele aparecer no ponto,
   é ignorado com um aviso. Se ele ficar no cadastro sem ponto, o app avisa (veja abaixo).
+  Colaborador desligado: basta retirá-lo do cadastro. Se o extrato de consignados ainda listar essa
+  matrícula, o sistema ignora e avisa na tela.
 - **Mudou horário ou dias de trabalho:** ajustar as colunas de jornada.
 - **Passou a usar ou sair do banco de horas, ou não bate ponto:** colunas `banco_horas` e `registra_ponto`.
-- **Novo empréstimo consignado:** vem no extrato do mês, não precisa mexer no cadastro, mas a
-  matrícula do extrato precisa existir no cadastro, senão o fechamento para com erro.
+- **Novo empréstimo consignado:** vem no extrato do mês, não precisa mexer no cadastro. Matrícula do
+  extrato que não consta no cadastro não bloqueia: a linha é descartada e a tela mostra o aviso
+  "Consignado ignorado para a(s) matrícula(s) ...". O aviso existe porque a mesma situação também
+  pode ser matrícula digitada errada. Essa tolerância vale só para o consignado; nos arquivos de
+  banco de horas, matrícula fora do cadastro continua sendo erro.
 
 ### Cadastrado sem ponto (aviso antes de fechar)
 
