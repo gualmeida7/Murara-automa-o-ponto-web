@@ -26,3 +26,7 @@ desktop.ini
 
 # Streamlit (segredos)
 .streamlit/secrets.toml
+
+# Notas locais de continuacao entre sessoes (nao versionar)
+CONTEXTO_CONTINUACAO.md
+PROMPT_CONTINUACAO_REGULARIZACAO.md
