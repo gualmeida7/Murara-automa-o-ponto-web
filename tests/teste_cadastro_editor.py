@@ -308,3 +308,15 @@ def test_ano_de_2_e_de_4_digitos_sao_avaliados_em_grupos_separados(tmp_path):
     assert df.at["1", "admissao"] == date(2026, 3, 13) and df.at["2", "admissao"] == date(2026, 3, 9)
     assert df.at["3", "admissao"] == date(2026, 10, 14)
     assert not any("misturam" in a for a in res.avisos)
+
+
+def test_mensagem_de_validacao_cita_a_linha_da_planilha(tmp_path):
+    caminho = _montar_xlsx(tmp_path / "c.xlsx", [_linha(1), _linha(2, entrada="")])
+    res = ler_cadastro_para_edicao(str(caminho))
+    assert res.linhas_planilha == {"1": 2, "2": 3}
+    problemas = validar_cadastro(res.df, linhas_planilha=res.linhas_planilha)
+    erro = next(p for p in problemas if p.campo == "entrada" and p.severidade == "erro")
+    assert erro.matricula == "2" and erro.mensagem.startswith("Matrícula 2 (linha 3 da planilha): ")
+    # sem o mapa (ou para linha acrescentada na tela) a mensagem segue so' com a matricula
+    sem_mapa = next(p for p in validar_cadastro(res.df) if p.campo == "entrada" and p.severidade == "erro")
+    assert sem_mapa.mensagem.startswith("Matrícula 2: ")

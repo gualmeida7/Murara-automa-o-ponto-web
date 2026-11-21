@@ -569,6 +569,7 @@ with secao_leitura(f"1. Arquivos{resumo_arquivos}", passo == 1):
                 st.session_state.update(
                     cadastro_trabalho=trabalho, cadastro_editado=trabalho, cadastro_enviado=carga.df,
                     cadastro_diferencas=diferencas, cadastro_avisos_carga=carga.avisos,
+                    cadastro_linhas_planilha=carga.linhas_planilha,
                     cadastro_nome_arquivo=Path(tipos_confirmados["cadastro"][0]).name,
                     cadastro_versao_editor=st.session_state.get("cadastro_versao_editor", 0) + 1,
                 )
@@ -670,7 +671,8 @@ if st.session_state.get("arquivos_confirmados") and "cadastro_trabalho" in st.se
         )
         editado = normalizar_para_edicao(retorno.drop(columns=["situacao"]))
         st.session_state.cadastro_editado = editado
-        problemas = validar_cadastro(editado, st.session_state.get("periodo_fim"))
+        problemas = validar_cadastro(editado, st.session_state.get("periodo_fim"),
+                                     st.session_state.get("cadastro_linhas_planilha"))
         st.session_state.cadastro_bloqueado = tem_erros(problemas)
 
         erros = [p for p in problemas if p.severidade == "erro"]

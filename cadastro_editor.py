@@ -84,6 +84,7 @@ class ResultadoCarga:
     df: pd.DataFrame
     avisos: list[str] = field(default_factory=list)
     colunas_ausentes: list[str] = field(default_factory=list)   # colunas canonicas que a planilha nao trazia
+    linhas_planilha: dict[str, int] = field(default_factory=dict)   # matricula -> linha do Excel (1 = cabecalho)
 
 
 @dataclass(frozen=True)
@@ -443,7 +444,8 @@ def ler_cadastro_para_edicao(caminho: str) -> ResultadoCarga:
     for i, valor in enumerate(bruto["admissao"] if "admissao" in bruto.columns else []):
         if not _vazio(valor) and df.at[i, "admissao"] is None:
             avisos.append(f"Matrícula {df.at[i, 'matricula'] or '(vazia)'}: admissão '{valor}' não está em dd/mm/aaaa; deixada em branco.")
-    return ResultadoCarga(df=df, avisos=avisos, colunas_ausentes=colunas_ausentes)
+    linhas_planilha = {m: int(n) for m, n in zip(df["matricula"], bruto["_linha_excel"]) if m}
+    return ResultadoCarga(df=df, avisos=avisos, colunas_ausentes=colunas_ausentes, linhas_planilha=linhas_planilha)
 
 
 # ---------------------------------------------------------------------------------------------- validacao
@@ -472,8 +474,13 @@ def _hora_valida(v: str) -> bool:
     return bool(re.fullmatch(r"([01]?\d|2[0-3]):[0-5]\d", v))
 
 
-def validar_cadastro(df: pd.DataFrame, data_fim: date | None = None) -> list[Problema]:
-    """Todas as pendencias do cadastro, erros primeiro. `data_fim` (fim do periodo) habilita o aviso de admissao."""
+def validar_cadastro(df: pd.DataFrame, data_fim: date | None = None,
+                     linhas_planilha: dict[str, int] | None = None) -> list[Problema]:
+    """
+    Todas as pendencias do cadastro, erros primeiro. `data_fim` (fim do periodo) habilita o aviso de admissao.
+    `linhas_planilha` (matricula -> linha do Excel, de `ResultadoCarga`) faz a mensagem citar tambem a linha da
+    planilha enviada; colaboradores acrescentados na tela nao tem linha e ficam so' com a matricula.
+    """
     d = df.reset_index(drop=True)
     problemas: list[Problema] = []
 
@@ -482,7 +489,9 @@ def validar_cadastro(df: pd.DataFrame, data_fim: date | None = None) -> list[Pro
         return mat or "(sem matrícula)"
 
     def add(i: int, campo: str, sev: str, msg: str) -> None:
-        problemas.append(Problema(rotulo(i), campo, sev, f"Matrícula {rotulo(i)}: {msg}"))
+        linha = (linhas_planilha or {}).get(rotulo(i))
+        onde = f" (linha {linha} da planilha)" if linha else ""
+        problemas.append(Problema(rotulo(i), campo, sev, f"Matrícula {rotulo(i)}{onde}: {msg}"))
 
     def col(nome: str):
         return d[nome] if nome in d.columns else pd.Series([None] * len(d), dtype=object)
