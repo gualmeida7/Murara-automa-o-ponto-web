@@ -44,7 +44,7 @@ from banco_horas import consolidar_banco_horas, ler_banco_horas_secullum, ler_ba
 from validacao import (
     verificar_colunas,
     validar_pis_existem,
-    normalizar_identificador_colaborador,
+    separar_identificadores_resolvidos,
     canonicalizar_pis,
     converter_valor_monetario,
     ler_sim_nao,
@@ -258,7 +258,10 @@ def _detectar_coluna_valor_consignado(colunas: list[str]) -> str | None:
     )
 
 
-def carregar_consignados(caminho: str | list[str], cadastro: pd.DataFrame | None = None) -> pd.DataFrame:
+def carregar_consignados(
+    caminho: str | list[str],
+    cadastro: pd.DataFrame | None = None,
+) -> pd.DataFrame:
     """
     Extrato de consignados. Espera colunas matricula/pis + valor da
     parcela mensal (ex.: "valor_desconto", ou "valorParcela" no layout
@@ -279,7 +282,17 @@ def carregar_consignados(caminho: str | list[str], cadastro: pd.DataFrame | None
     interna, não pelo PIS, e sem o cadastro em mãos não dá para saber
     qual dos dois está na coluna de identificação — veja
     `validacao.normalizar_identificador_colaborador` para o porquê.
+
+    Identificador fora do cadastro NÃO bloqueia: o extrato do banco é emitido de fora e costuma
+    continuar listando quem já saiu da empresa (colaborador desligado é retirado do cadastro, e o
+    consignado dele pertence à rescisão, não à folha do mês). Essas linhas são descartadas e os
+    identificadores, sem repetição e ordenados, ficam em `resultado.attrs["consignados_ignorados"]`
+    (lista vazia se não houve nenhum) para quem chamou AVISAR o usuário - descartar em silêncio
+    esconderia uma matrícula digitada errada. A tolerância vale só aqui: banco de horas e demais
+    arquivos continuam exigindo identificador do cadastro. Sem `cadastro`, nada é descartado.
+    Coluna de identificação ou de valor ausente continua sendo erro.
     """
+    ignorados: set[str] = set()
     caminhos = [caminho] if isinstance(caminho, str) else list(caminho)
     partes = []
     for caminho_arquivo in caminhos:
@@ -295,11 +308,24 @@ def carregar_consignados(caminho: str | list[str], cadastro: pd.DataFrame | None
         parte = df[[col_id, col_valor]].rename(columns={col_id: "pis", col_valor: "valor_consignado"})
         parte["pis"] = parte["pis"].astype(str).str.strip()
         if cadastro is not None:
-            parte = normalizar_identificador_colaborador(parte, "pis", cadastro, "Extrato de Consignados", caminho_arquivo)
+            parte, fora_do_cadastro = separar_identificadores_resolvidos(parte, "pis", cadastro)
+            ignorados.update(fora_do_cadastro)
         partes.append(parte)
 
-    out = pd.concat(partes, ignore_index=True)
-    return out.groupby("pis", as_index=False)["valor_consignado"].sum()
+    out = pd.concat(partes, ignore_index=True).groupby("pis", as_index=False)["valor_consignado"].sum()
+    out.attrs["consignados_ignorados"] = sorted(ignorados)
+    return out
+
+
+def aviso_consignados_ignorados(consignados: pd.DataFrame | None) -> str | None:
+    """Texto do aviso para os consignados descartados (None se não houve nenhum). Usado pelas três telas."""
+    ignorados = consignados.attrs.get("consignados_ignorados", []) if consignados is not None else []
+    if not ignorados:
+        return None
+    return (
+        f"Consignado ignorado para a(s) matrícula(s) {', '.join(ignorados)}: não consta(m) no cadastro "
+        "(colaborador desligado ou matrícula digitada errada). Confira antes de fechar."
+    )
 
 
 def executar_checagens_preflight(
@@ -1340,6 +1366,8 @@ if __name__ == "__main__":
     # estiver errado em algum desses arquivos, a usuaria fica sabendo em
     # segundos, sem esperar o AFD inteiro ser processado pra descobrir.
     consignados = carregar_consignados(CAMINHO_CONSIGNADOS, cadastro=cadastro)
+    if aviso_consignados_ignorados(consignados):
+        print(f"[aviso] {aviso_consignados_ignorados(consignados)}")
     banco_secullum = ler_banco_horas_secullum(CAMINHO_BANCO_HORAS_SECULLUM, cadastro=cadastro) if Path(CAMINHO_BANCO_HORAS_SECULLUM).exists() else None
     banco_adriano = ler_banco_horas_adriano(CAMINHO_PLANILHA_ADRIANO, PIS_ADRIANO, cadastro=cadastro) if Path(CAMINHO_PLANILHA_ADRIANO).exists() else None
 

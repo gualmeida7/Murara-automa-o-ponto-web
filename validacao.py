@@ -108,6 +108,51 @@ def validar_pis_existem(
         )
 
 
+def _resolver_identificadores(
+    df: pd.DataFrame, coluna_id: str, cadastro: pd.DataFrame, ignorar_zeros_esquerda: bool = False
+) -> tuple[pd.Series, list[str]]:
+    """Casa cada valor da coluna com PIS ou matrícula do cadastro. Devolve (PIS canônico ou None, não resolvidos ordenados)."""
+    cadastro_pis = cadastro["pis"].astype(str).str.strip()
+    mapa_matricula_para_pis = dict(zip(cadastro["matricula"].astype(str).str.strip(), cadastro_pis))
+    pis_validos = set(cadastro_pis)
+    mapa_sem_zeros = {m.lstrip("0"): p for m, p in mapa_matricula_para_pis.items() if m.lstrip("0")}
+
+    def resolver(valor):
+        v = str(valor).strip()
+        if v in pis_validos:
+            return v
+        if v in mapa_matricula_para_pis:
+            return mapa_matricula_para_pis[v]
+        if ignorar_zeros_esquerda and v.lstrip("0"):
+            return mapa_sem_zeros.get(v.lstrip("0"))
+        return None
+
+    resolvidos = df[coluna_id].map(resolver)
+    nao_resolvidos = sorted(df.loc[resolvidos.isna(), coluna_id].astype(str).str.strip().unique().tolist())
+    return resolvidos, nao_resolvidos
+
+
+def separar_identificadores_resolvidos(
+    df: pd.DataFrame,
+    coluna_id: str,
+    cadastro: pd.DataFrame,
+) -> tuple[pd.DataFrame, list[str]]:
+    """
+    Versão tolerante de `normalizar_identificador_colaborador`: em vez de levantar erro, DESCARTA as linhas
+    cujo identificador não bate com PIS nem matrícula do cadastro e devolve (df só com as resolvidas, já com o
+    PIS canônico; matrícula com zeros à esquerda, como '096', também casa), lista ordenada e sem repetição dos identificadores descartados).
+
+    Usada só no extrato de consignados, onde um colaborador desligado (já retirado do cadastro) ainda pode
+    constar no extrato. O chamador é responsável por AVISAR o usuário; os demais arquivos (banco de horas)
+    continuam usando a versão estrita.
+    """
+    resolvidos, nao_resolvidos = _resolver_identificadores(df, coluna_id, cadastro, ignorar_zeros_esquerda=True)
+    manter = resolvidos.notna()
+    out = df.loc[manter].copy()
+    out[coluna_id] = resolvidos[manter]
+    return out, nao_resolvidos
+
+
 def normalizar_identificador_colaborador(
     df: pd.DataFrame,
     coluna_id: str,
@@ -135,20 +180,7 @@ def normalizar_identificador_colaborador(
     trabalhando só com PIS. Só levanta erro se um valor não bater com
     PIS *nem* com matrícula de ninguém.
     """
-    cadastro_pis = cadastro["pis"].astype(str).str.strip()
-    mapa_matricula_para_pis = dict(zip(cadastro["matricula"].astype(str).str.strip(), cadastro_pis))
-    pis_validos = set(cadastro_pis)
-
-    def resolver(valor):
-        v = str(valor).strip()
-        if v in pis_validos:
-            return v
-        if v in mapa_matricula_para_pis:
-            return mapa_matricula_para_pis[v]
-        return None
-
-    resolvidos = df[coluna_id].map(resolver)
-    nao_resolvidos = sorted(df.loc[resolvidos.isna(), coluna_id].astype(str).str.strip().unique().tolist())
+    resolvidos, nao_resolvidos = _resolver_identificadores(df, coluna_id, cadastro)
     if nao_resolvidos:
         raise ArquivoInvalidoError(
             f"O arquivo de {nome_amigavel_arquivo} ('{caminho}') cita o(s) identificador(es) "

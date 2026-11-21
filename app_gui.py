@@ -28,6 +28,7 @@ incompleta, etc.) - essas ficam com uma classificacao conservadora
 revisao antes do envio definitivo a' contabilidade.
 """
 
+import logging
 import os
 import sys
 import threading
@@ -41,6 +42,7 @@ from tkinter import ttk, filedialog, messagebox
 import pandas as pd
 
 from pipeline import (
+    aviso_consignados_ignorados,
     avisos_banco_horas,
     carregar_cadastro_colaboradores,
     carregar_consignados,
@@ -290,6 +292,13 @@ class AplicativoFolha(tk.Tk):
                     self.caminhos["banco_adriano"].get(), self.pis_adriano.get().strip(), cadastro=cadastro
                 )
 
+            aviso_consignado = aviso_consignados_ignorados(consignados)
+            if aviso_consignado:
+                logging.getLogger(__name__).warning(aviso_consignado)
+                avisos_consignado = (aviso_consignado,)
+            else:
+                avisos_consignado = ()
+
             self._status(2)
             # Checagem pre-voo ANTES do AFD (a etapa mais pesada): confere
             # que todo PIS citado nos arquivos opcionais existe no cadastro,
@@ -340,6 +349,7 @@ class AplicativoFolha(tk.Tk):
                 usou_decisoes_rh=usou_decisoes_rh,
                 avisos_feriados=avisos_feriados,
                 avisos_banco=avisos_banco,
+                avisos_consignado=avisos_consignado,
             )
         except ArquivoInvalidoError as e:
             # Erro amigavel, ja' pronto para mostrar direto pra usuaria -
@@ -363,7 +373,7 @@ class AplicativoFolha(tk.Tk):
             )
 
     def _finalizar(self, sucesso=False, erro=None, pasta_saida="", n_arquivos=0, n_pendencias=0, usou_decisoes_rh=False,
-                   avisos_feriados=(), avisos_banco=()):
+                   avisos_feriados=(), avisos_banco=(), avisos_consignado=()):
         def atualizar_ui():
             self.botao_processar.config(state="normal", text="Processar Folha de Pagamento")
             if erro:
@@ -392,11 +402,12 @@ class AplicativoFolha(tk.Tk):
                 aviso_pendencias = ""
             aviso_feriados = ("\n\nAtenção (feriados):\n- " + "\n- ".join(avisos_feriados)) if avisos_feriados else ""
             aviso_banco = ("\n\nAtenção (banco de horas):\n- " + "\n- ".join(avisos_banco)) if avisos_banco else ""
+            aviso_consignado = ("\n\nAtenção (consignado):\n- " + "\n- ".join(avisos_consignado)) if avisos_consignado else ""
             messagebox.showinfo(
                 "Sucesso",
                 f"Planilha gerada com sucesso!\n\n"
                 f"{n_arquivos} arquivo(s) de Relação de Valores salvos em:\n{pasta_saida}"
-                f"{aviso_pendencias}{aviso_feriados}{aviso_banco}",
+                f"{aviso_pendencias}{aviso_feriados}{aviso_banco}{aviso_consignado}",
             )
 
         # thread em segundo plano nao pode mexer na UI direto - agenda na thread principal

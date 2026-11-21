@@ -33,6 +33,7 @@ from pipeline import (
     carregar_cadastro_colaboradores,
     carregar_consignados,
     PREENCHER_CONSIGNADO,
+    aviso_consignados_ignorados,
     avisos_banco_horas,
     executar_checagens_preflight,
     rodada_1_gerar_fila_de_excecoes,
@@ -552,7 +553,8 @@ with secao_leitura(f"1. Arquivos{resumo_arquivos}", passo == 1):
                 st.session_state.pis_adriano = pis_adriano.strip()
                 # limpa qualquer processamento anterior, já que os arquivos mudaram
                 for chave in ("cadastro_df", "preflight_ok", "apuracao_diaria", "fila_tabela", "arquivos_finais",
-                              "feriados_periodo", "avisos_feriados", "avisos_banco_horas", "cadastro_hash_validado"):
+                              "feriados_periodo", "avisos_feriados", "avisos_banco_horas", "aviso_consignados",
+                              "cadastro_hash_validado"):
                     st.session_state.pop(chave, None)
                 try:
                     carga = ler_cadastro_para_edicao(tipos_confirmados["cadastro"][0])
@@ -790,6 +792,7 @@ if st.session_state.get("arquivos_confirmados"):
                 st.session_state.cadastro_hash_validado = hash_do_cadastro(st.session_state.cadastro_editado)
                 st.session_state.cadastro_df = cadastro
                 st.session_state.consignados_df = consignados
+                st.session_state.aviso_consignados = aviso_consignados_ignorados(consignados)
                 st.session_state.banco_horas_df = consolidar_banco_horas(
                     cadastro["pis"].tolist(), banco_secullum, banco_adriano
                 )
@@ -799,6 +802,8 @@ if st.session_state.get("arquivos_confirmados"):
 
     # Avisos (nao impedem de continuar): ficam na tela depois do rerun, por isso saem do session_state.
     if st.session_state.get("preflight_ok"):
+        if st.session_state.get("aviso_consignados"):
+            avisos.append(("warning", st.session_state.aviso_consignados))
         for aviso in st.session_state.get("avisos_banco_horas", []):
             avisos.append(("warning", aviso))
 
