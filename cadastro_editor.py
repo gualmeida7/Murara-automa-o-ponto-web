@@ -85,6 +85,8 @@ class ResultadoCarga:
     avisos: list[str] = field(default_factory=list)
     colunas_ausentes: list[str] = field(default_factory=list)   # colunas canonicas que a planilha nao trazia
     linhas_planilha: dict[str, int] = field(default_factory=dict)   # matricula -> linha do Excel (1 = cabecalho)
+    formato_admissao: str = ""      # 'dia/mês/ano', 'mês/dia/ano' ou '' (nenhuma admissão em texto com barras)
+    sem_cores: bool = False         # xlsx sem nenhum preenchimento: fixos/desconto manual nao puderam ser lidos
 
 
 @dataclass(frozen=True)
@@ -270,7 +272,7 @@ def _ha_preenchimento(caminho: str) -> bool:
 _DATA_BARRAS = re.compile(r"(\d{1,2})/(\d{1,2})/(\d{2}|\d{4})")
 
 
-def _interpretar_admissoes_em_texto(bruto: pd.DataFrame, avisos: list[str]) -> None:
+def _interpretar_admissoes_em_texto(bruto: pd.DataFrame, avisos: list[str]) -> str:
     """
     Admissao digitada como TEXTO com barras ('3/13/26') pode ser dd/mm/aa ou mm/dd/aa (planilhas salvas por
     ferramentas em ingles). A ordem e' descoberta pela propria coluna: um primeiro numero acima de 12 so' pode ser
@@ -280,7 +282,7 @@ def _interpretar_admissoes_em_texto(bruto: pd.DataFrame, avisos: list[str]) -> N
     adivinha uma admissao, que muda o proporcional do vale e as faltas ignoradas.
     """
     if "admissao" not in bruto.columns:
-        return
+        return ""
     grupos: dict[int, dict[int, re.Match]] = {}
     for i, v in bruto["admissao"].items():
         m = _DATA_BARRAS.fullmatch(v.strip()) if isinstance(v, str) else None
@@ -288,11 +290,15 @@ def _interpretar_admissoes_em_texto(bruto: pd.DataFrame, avisos: list[str]) -> N
             grupos.setdefault(len(m.group(3)), {})[i] = m
     convertidas = 0
     em_branco: list[str] = []
-    for partes in grupos.values():
+    formatos: dict[int, str] = {}
+    sem_evidencia = False
+    for digitos_ano, partes in grupos.items():
         ha_dia_primeiro = any(int(m.group(1)) > 12 for m in partes.values())
         ha_mes_primeiro = any(int(m.group(2)) > 12 for m in partes.values())
         mes_primeiro = ha_mes_primeiro and not ha_dia_primeiro
         misto = ha_dia_primeiro and ha_mes_primeiro
+        formatos[digitos_ano] = "mês/dia/ano" if mes_primeiro else "dia/mês/ano"
+        sem_evidencia = sem_evidencia or not (ha_dia_primeiro or ha_mes_primeiro)
         for i, m in partes.items():
             a, b, ano = int(m.group(1)), int(m.group(2)), int(m.group(3))
             ano += 2000 if ano < 100 else 0
@@ -313,14 +319,24 @@ def _interpretar_admissoes_em_texto(bruto: pd.DataFrame, avisos: list[str]) -> N
             f"As datas de admissão em texto com ano de 2 dígitos estão no formato mês/dia/ano (ex.: '3/13/26'). Foram "
             f"lidas assim ({convertidas} datas). Confira as admissões na tela antes de fechar."
         )
+    if sem_evidencia:
+        avisos.append(
+            "As datas de admissão em texto não trazem nenhum dia acima de 12; foi assumido o formato dia/mês/ano. "
+            "Confira as admissões na tela (se a planilha usar a ordem inversa, corrija-as)."
+        )
     if em_branco:
         avisos.append(
             "Há datas de admissão em texto que misturam dia/mês e mês/dia e não puderam ser distinguidas; ficaram em "
             f"branco: matrículas {', '.join(em_branco)}. Preencha-as na tela."
         )
+    if not formatos:
+        return ""
+    if len(set(formatos.values())) == 1:
+        return next(iter(formatos.values()))
+    return " e ".join(f"{f} (ano com {n} dígitos)" for n, f in sorted(formatos.items()))
 
 
-def _escolher_vale(df: pd.DataFrame) -> pd.DataFrame:
+def _escolher_vale(df: pd.DataFrame, avisos: list[str] | None = None) -> pd.DataFrame:
     """Une as colunas Alelo/Ticket em `valor_va` + `beneficio`, conforme a empresa de cada linha."""
     df = df.copy()
     for col in ("valor_va", "beneficio", _COL_VALE_ALELO, _COL_VALE_TICKET):
@@ -330,6 +346,13 @@ def _escolher_vale(df: pd.DataFrame) -> pd.DataFrame:
     for _, linha in df.iterrows():
         cod = _codigo_empresa_chave(_texto(linha.get("codigo_empresa")))
         rotulo_empresa = {EMPRESA_ALELO: BENEFICIO_ALELO, EMPRESA_TICKET: BENEFICIO_TICKET}.get(cod)
+        if rotulo_empresa is None and avisos is not None:
+            mat = _texto(linha.get("matricula")) or f"da linha {linha.get('_linha_excel')}"
+            avisos.append(
+                f"Matrícula {mat}: código de empresa {'vazio' if not cod else repr(cod)} não é {EMPRESA_ALELO} "
+                f"(Alelo) nem {EMPRESA_TICKET} (Ticket); o vale foi atribuído pela coluna preenchida. Confira o vale "
+                "na tela."
+            )
         pares = [(_COL_VALE_ALELO, BENEFICIO_ALELO), (_COL_VALE_TICKET, BENEFICIO_TICKET)]
         if cod == EMPRESA_TICKET:
             pares.reverse()
@@ -409,14 +432,16 @@ def ler_cadastro_para_edicao(caminho: str) -> ResultadoCarga:
                     avisos.append(f"Matrícula {_texto(bruto.at[i, 'matricula']) or '(vazia)'}: valor '{v}' em '{col}' "
                                   "não é sim/não; considerado o valor padrão.")
     colunas_ausentes = [c for c in COLUNAS_CANONICAS if c not in bruto.columns and c not in ("beneficio", "valor_va", "cooper")]
-    _interpretar_admissoes_em_texto(bruto, avisos)
-    bruto = _escolher_vale(bruto)
+    formato_admissao = _interpretar_admissoes_em_texto(bruto, avisos)
+    bruto = _escolher_vale(bruto, avisos)
     df = normalizar_para_edicao(bruto)
 
+    sem_cores = False
     if str(caminho).lower().endswith(".xlsx"):
         try:
             cores = _ler_cores(caminho)
             if not cores and not _ha_preenchimento(caminho):
+                sem_cores = True
                 avisos.append(
                     "A planilha não traz nenhuma cor de preenchimento. Se a cliente marcava em verde os valores fixos "
                     "do vale/Cooper e o desconto manual do vale, essa informação não veio no arquivo: 'va_fixo', "
@@ -445,7 +470,36 @@ def ler_cadastro_para_edicao(caminho: str) -> ResultadoCarga:
         if not _vazio(valor) and df.at[i, "admissao"] is None:
             avisos.append(f"Matrícula {df.at[i, 'matricula'] or '(vazia)'}: admissão '{valor}' não está em dd/mm/aaaa; deixada em branco.")
     linhas_planilha = {m: int(n) for m, n in zip(df["matricula"], bruto["_linha_excel"]) if m}
-    return ResultadoCarga(df=df, avisos=avisos, colunas_ausentes=colunas_ausentes, linhas_planilha=linhas_planilha)
+    return ResultadoCarga(df=df, avisos=avisos, colunas_ausentes=colunas_ausentes, linhas_planilha=linhas_planilha,
+                          formato_admissao=formato_admissao, sem_cores=sem_cores)
+
+
+def resumo_conferencia(df: pd.DataFrame, amostra: int = 3) -> dict:
+    """
+    Numeros para a cliente conferir a leitura de relance (so' le o cadastro, nao decide nada): vale por empresa e
+    tipo, Cooper, marcados como fixo/desconto manual e algumas admissoes em dd/mm/aaaa.
+    """
+    d = df.reset_index(drop=True)
+    cod = d["codigo_empresa"].map(lambda v: _codigo_empresa_chave(_texto(v))) if len(d) else pd.Series([], dtype=str)
+    vale = d["valor_va"].notna() & (pd.to_numeric(d["valor_va"], errors="coerce") > 0) if len(d) else pd.Series([], dtype=bool)
+    por_empresa: dict[str, dict[str, int]] = {}
+    for c, b, v in zip(cod, d["beneficio"], vale):
+        if not v:
+            continue
+        por_empresa.setdefault(c or "(vazio)", Counter())[_texto(b) or "(sem tipo)"] += 1
+    cooper = pd.to_numeric(d["cooper"], errors="coerce").fillna(0) > 0 if len(d) else pd.Series([], dtype=bool)
+    com_adm = [(m, a) for m, a in zip(d["matricula"], d["admissao"]) if a is not None and not pd.isna(a)]
+    return {
+        "total": len(d),
+        "vale_por_empresa": {k: dict(v) for k, v in sorted(por_empresa.items())},
+        "sem_vale": int((~vale).sum()),
+        "cooper": int(cooper.sum()),
+        "va_fixo": int(d["va_fixo"].sum()) if len(d) else 0,
+        "cooper_fixo": int(d["cooper_fixo"].sum()) if len(d) else 0,
+        "va_desconto_manual": int(d["va_desconto_manual"].sum()) if len(d) else 0,
+        "admissoes_lidas": len(com_adm),
+        "amostra_admissoes": [(m, a.strftime("%d/%m/%Y")) for m, a in com_adm[:amostra]],
+    }
 
 
 # ---------------------------------------------------------------------------------------------- validacao

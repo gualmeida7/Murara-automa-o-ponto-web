@@ -120,3 +120,13 @@ def test_salvar_e_reenviar_planilha_diferente_mostra_diferencas_sem_sobrescrever
     # o cadastro de trabalho continua sendo o do sistema (1 e 2), com a entrada original
     trabalho = at2.session_state["cadastro_trabalho"].set_index("matricula")
     assert list(trabalho.index) == ["1", "2"] and trabalho.at["2", "entrada"] == "07:30"
+
+
+def test_tela_mostra_conferencia_e_aviso_de_planilha_sem_cores():
+    at = _enviar_e_confirmar(_xlsx(_linha("1", beneficio="Alelo Cartão", cooper=200.0, admissao="2026-11-16"),
+                                   _linha("2", codigo_empresa="002", beneficio="Ticket")))
+    texto = " ".join(m.value for m in at.markdown)
+    assert "Conferência da leitura do cadastro" in texto and "Empresa 001: 1 com Alelo Cartão" in texto
+    assert "Empresa 002: 1 com Ticket" in texto and "Com Cooper: 1" in texto
+    assert "matrícula 1: 16/11/2026" in texto
+    assert any("A planilha chegou sem cores; marque abaixo" in i.value for i in at.info)

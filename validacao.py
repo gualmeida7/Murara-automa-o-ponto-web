@@ -24,7 +24,7 @@ class ArquivoInvalidoError(ValueError):
     Erro amigavel levantado quando um arquivo de entrada esta ilegivel ou
     sem uma coluna obrigatoria. E' subclasse de ValueError de proposito -
     qualquer codigo que ja trata ValueError (como a interface grafica em
-    app_gui.py) continua funcionando sem precisar de nenhum ajuste.
+    a tela em app_web.py) continua funcionando sem precisar de nenhum ajuste.
     """
 
 
@@ -281,14 +281,21 @@ def converter_horas_decimais(valor, onde: str, coluna: str) -> float:
 
 
 def converter_valor_monetario(valor, onde: str, coluna: str) -> float | None:
-    """Numero ou texto brasileiro ("62,50", "R$ 62,50", "1.234,56") -> float. Vazio -> None."""
+    """Numero ou texto ("62,50", "R$ 62,50", "1.234,56", "R$ 1,500.00") -> float. Vazio -> None."""
     if valor is None or pd.isna(valor) or str(valor).strip() == "":
         return None
     if isinstance(valor, (int, float, np.integer, np.floating)) and not isinstance(valor, (bool, np.bool_)):
         return float(valor)
     texto = re.sub(r"^R\$\s*", "", str(valor).strip(), flags=re.IGNORECASE).replace(" ", "")
-    if "," in texto:
-        texto = texto.replace(".", "").replace(",", ".")
+    if "," in texto and "." in texto:
+        # os dois separadores: o ULTIMO e' o decimal ("1.234,56" brasileiro; "1,500.00" americano, como o Excel
+        # em ingles grava). Antes "1,500.00" virava 1,5 em silencio.
+        if texto.rfind(",") > texto.rfind("."):
+            texto = texto.replace(".", "").replace(",", ".")
+        else:
+            texto = texto.replace(",", "")
+    elif "," in texto:
+        texto = texto.replace(",", ".")
     if not re.fullmatch(r"\d+(\.\d+)?", texto):
         raise ArquivoInvalidoError(
             f"{onde}: o valor '{valor}' da coluna '{coluna}' não é um valor em R$ válido. Use por exemplo 62,50."

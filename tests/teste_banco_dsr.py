@@ -151,6 +151,9 @@ def test_converter_horas_invalido_aponta_arquivo_e_linha():
 def test_converter_valor_monetario():
     assert converter_valor_monetario("R$ 62,50", "x", "c") == 62.5
     assert converter_valor_monetario("1.234,56", "x", "c") == 1234.56
+    assert converter_valor_monetario(" R$ 1,500.00 ", "x", "c") == 1500.0   # formato americano (planilha da cliente)
+    assert converter_valor_monetario("1,234,567.89", "x", "c") == 1234567.89
+    assert converter_valor_monetario("960,00", "x", "c") == 960.0
     assert converter_valor_monetario(None, "x", "c") is None
 
 

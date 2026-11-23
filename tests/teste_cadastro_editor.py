@@ -70,6 +70,19 @@ def test_cabecalhos_da_cliente_viram_colunas_canonicas_e_vale_por_empresa(tmp_pa
     assert not any(c in df.columns for c in ("cooper card assiduidade", "alelo alimentacao", "ticket alimentacao"))
 
 
+def test_valores_em_texto_da_cliente_com_milhar_americano_e_traco(tmp_path):
+    """A cliente digitou " R$ 1,500.00 " (milhar com virgula) e " R$ -   " (sem vale): 1500 e vazio, nunca 1,5."""
+    caminho = _montar_xlsx(tmp_path / "c.xlsx", [
+        _linha(1, "001", cooper=" R$ 200.00 ", alelo=" R$ 1,500.00 ", ticket=" R$ -   "),
+        _linha(2, "002", razao="EMPRESA B LTDA", cnpj="27.488.404/0001-22", cooper=" R$ 140.00 ",
+               alelo=" R$ -   ", ticket=" R$ 960.00 "),
+    ])
+    df = ler_cadastro_para_edicao(str(caminho)).df.set_index("matricula")
+    assert df.at["1", "valor_va"] == 1500 and df.at["1", "beneficio"] == "Alelo Cartão"
+    assert df.at["2", "valor_va"] == 960 and df.at["2", "beneficio"] == "Ticket"
+    assert df.at["1", "cooper"] == 200 and df.at["2", "cooper"] == 140
+
+
 def test_linhas_sem_matricula_e_pis_sao_ignoradas_com_aviso(tmp_path):
     caminho = _montar_xlsx(tmp_path / "c.xlsx", [_linha(1), _linha(2)])
     res = ler_cadastro_para_edicao(str(caminho))
@@ -320,3 +333,73 @@ def test_mensagem_de_validacao_cita_a_linha_da_planilha(tmp_path):
     # sem o mapa (ou para linha acrescentada na tela) a mensagem segue so' com a matricula
     sem_mapa = next(p for p in validar_cadastro(res.df) if p.campo == "entrada" and p.severidade == "erro")
     assert sem_mapa.mensagem.startswith("Matrícula 2: ")
+
+
+# ---------------------------------------------------------------------------------- conferencia na tela (P/Q/R e datas)
+def _planilha_com_cabecalhos(caminho: Path, cabecalho: list[str], linhas: list[list]) -> Path:
+    wb = Workbook()
+    ws = wb.active
+    ws.append(cabecalho)
+    for linha in linhas:
+        ws.append(linha)
+    wb.save(caminho)
+    return caminho
+
+
+def test_cabecalhos_com_espacos_sobrando_mapeiam_vale_e_cooper_por_empresa(tmp_path):
+    cab = ["matricula", "pis", "codigo_empresa", "razao_social", "entrada", "saida_almoco", "retorno_almoco", "saida",
+           "dias_trabalho", " Cooper Card Assiduidade ", " Alelo Alimentação ", "Ticket Alimentação "]
+    base = ["07:30", "12:00", "13:00", "17:30", "0,1,2,3,4"]
+    caminho = _planilha_com_cabecalhos(tmp_path / "c.xlsx", cab, [
+        [1, "00000000001", "001", "EMPRESA A LTDA", *base, 200, 1100, 999],    # ticket preenchido, mas e' empresa 001
+        [2, "00000000002", "002", "EMPRESA B LTDA", *base, 140, 888, 900],     # alelo preenchido, mas e' empresa 002
+    ])
+    df = ler_cadastro_para_edicao(str(caminho)).df.set_index("matricula")
+    assert df.at["1", "valor_va"] == 1100 and df.at["1", "beneficio"] == "Alelo Cartão"
+    assert df.at["2", "valor_va"] == 900 and df.at["2", "beneficio"] == "Ticket"
+    assert df.at["1", "cooper"] == 200 and df.at["2", "cooper"] == 140
+    assert not any(c.strip() != c or c in ("_vale_alelo", "_vale_ticket") for c in df.columns)
+
+
+def test_empresa_vazia_ou_desconhecida_gera_aviso_claro(tmp_path):
+    caminho = _montar_xlsx(tmp_path / "c.xlsx", [
+        _linha(1, "003", alelo=500), _linha(2, "", razao="X", ticket=700), _linha(3, "001", alelo=100),
+    ])
+    res = ler_cadastro_para_edicao(str(caminho))
+    assert any("Matrícula 1" in a and "'003'" in a for a in res.avisos), res.avisos
+    assert any("Matrícula 2" in a and "vazio" in a for a in res.avisos), res.avisos
+    assert not any("Matrícula 3" in a and "código de empresa" in a for a in res.avisos)
+
+
+def test_datas_todas_ambiguas_assumem_dia_mes_e_avisam(tmp_path):
+    caminho = _montar_xlsx(tmp_path / "c.xlsx", [_linha(1, admissao="3/4/26"), _linha(2, admissao="5/6/26")])
+    res = ler_cadastro_para_edicao(str(caminho))
+    df = res.df.set_index("matricula")
+    assert df.at["1", "admissao"] == date(2026, 4, 3) and df.at["2", "admissao"] == date(2026, 6, 5)
+    assert res.formato_admissao == "dia/mês/ano"
+    assert any("nenhum dia acima de 12" in a and "dia/mês/ano" in a for a in res.avisos), res.avisos
+
+
+def test_formato_detectado_mes_dia_ano_e_exposto(tmp_path):
+    res = ler_cadastro_para_edicao(str(_montar_xlsx(tmp_path / "c.xlsx", [_linha(1, admissao="3/13/26"), _linha(2, admissao="3/4/26")])))
+    assert res.formato_admissao == "mês/dia/ano"
+    assert not any("nenhum dia acima de 12" in a for a in res.avisos)
+
+
+def test_sem_cores_e_exposto_e_resumo_conta_vale_cooper_e_marcas(tmp_path):
+    from cadastro_editor import resumo_conferencia
+    caminho = _montar_xlsx(tmp_path / "c.xlsx", [
+        _linha(1, "001", cooper=200, alelo=1100, admissao="3/13/26"),
+        _linha(2, "002", razao="B", cooper=None, ticket=900, admissao="3/4/26"),
+        _linha(3, "002", razao="B", ticket=None),
+    ])
+    res = ler_cadastro_para_edicao(str(caminho))
+    assert res.sem_cores is True
+    r = resumo_conferencia(res.df)
+    assert r["total"] == 3 and r["vale_por_empresa"] == {"001": {"Alelo Cartão": 1}, "002": {"Ticket": 1}}
+    assert r["sem_vale"] == 1 and r["cooper"] == 1
+    assert (r["va_fixo"], r["cooper_fixo"], r["va_desconto_manual"]) == (0, 0, 0)
+    assert r["amostra_admissoes"][0] == ("1", "13/03/2026")
+    com_cor = ler_cadastro_para_edicao(str(_montar_xlsx(
+        tmp_path / "d.xlsx", [_linha(1, cooper=200, alelo=1000)], extras_linha_a_linha={(2, 16): VERDE_FORTE})))
+    assert com_cor.sem_cores is False and resumo_conferencia(com_cor.df)["cooper_fixo"] == 1

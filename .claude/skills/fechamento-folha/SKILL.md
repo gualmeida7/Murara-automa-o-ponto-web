@@ -20,9 +20,9 @@ Automatiza o fechamento mensal (período padrão **26 a 25**): lê o ponto (AFD 
 | `validacao.py`, `leitura_arquivos.py` | Validação defensiva, `ArquivoInvalidoError`, leitura resiliente csv/xlsx. |
 | `pipeline.py` | Orquestra: `rodada_1_gerar_fila_de_excecoes` → decisões do RH → `rodada_2_gerar_relacao_de_valores` → `exportar_por_empresa`. |
 | `db_sessao.py` | SQLite (`fechamento_folha.db`) que guarda decisões/sessão por competência. |
-| `app_web.py` | UI Streamlit (recomendada). `app_gui.py` é o desktop tkinter legado. |
+| `app_web.py` | UI Streamlit (única tela). |
 
-Regra de ouro: **a lógica de cálculo mora nos módulos, não nos apps.** `app_web.py` e `app_gui.py` só chamam o `pipeline`; não duplique regras nas telas.
+Regra de ouro: **a lógica de cálculo mora nos módulos, não nos apps.** `app_web.py` só chama o `pipeline`; não duplique regras nas telas.
 
 ## Regras de negócio que não podem quebrar
 

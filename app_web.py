@@ -2,16 +2,15 @@
 app_web.py
 ==========
 Versão 100% web (Streamlit) do Sistema de Fechamento de Folha, numa
-única tela interativa. Substitui o app_gui.py (Tkinter) e os arquivos
-soltos fila_validacao_rh.csv / dashboard_aprovacao.html / decisoes_rh.csv
-por um fluxo único, em memória, com estado guardado em st.session_state.
+única tela interativa, sem arquivos intermediários soltos
+(fila_validacao_rh.csv / decisoes_rh.csv), com um fluxo único, em memória, com estado guardado em st.session_state.
 
 Este arquivo é só a CASCA de interface: toda a lógica de cálculo continua
 em afd_parser.py, business_rules.py, banco_horas.py e pipeline.py, sem
-nenhuma duplicação — os mesmos módulos que o app_gui.py (Tkinter) usa.
+nenhuma duplicação.
 
 Como rodar (veja também o guia completo na conversa):
-    pip install -r requirements_web.txt
+    pip install -r requirements.txt
     streamlit run app_web.py
 """
 
@@ -49,7 +48,7 @@ import db_sessao
 from cadastro_editor import (
     BENEFICIOS_PADRAO, COLUNAS_CANONICAS, SECOES, aplicar_aceites, cadastro_de_json, cadastro_para_json,
     cadastro_para_pipeline, cadastro_para_xlsx_bytes, hash_do_cadastro, ler_cadastro_para_edicao,
-    normalizar_cabecalhos, normalizar_para_edicao, reconciliar_com_salvo, situacao_por_linha, tem_erros, validar_cadastro,
+    normalizar_cabecalhos, resumo_conferencia, normalizar_para_edicao, reconciliar_com_salvo, situacao_por_linha, tem_erros, validar_cadastro,
 )
 from datas_br import formatar_data_br, parse_data_br
 from planilha_thales import exportar_planilha_thales
@@ -570,6 +569,7 @@ with secao_leitura(f"1. Arquivos{resumo_arquivos}", passo == 1):
                     cadastro_trabalho=trabalho, cadastro_editado=trabalho, cadastro_enviado=carga.df,
                     cadastro_diferencas=diferencas, cadastro_avisos_carga=carga.avisos,
                     cadastro_linhas_planilha=carga.linhas_planilha,
+                    cadastro_formato_admissao=carga.formato_admissao, cadastro_sem_cores=carga.sem_cores,
                     cadastro_nome_arquivo=Path(tipos_confirmados["cadastro"][0]).name,
                     cadastro_versao_editor=st.session_state.get("cadastro_versao_editor", 0) + 1,
                 )
@@ -590,8 +590,12 @@ if st.session_state.get("arquivos_confirmados") and "cadastro_trabalho" in st.se
             "A planilha enviada não é alterada. O que for corrigido aqui passa a valer para o fechamento "
             "e pode ser salvo no sistema ou baixado em planilha limpa."
         )
+        sem_cores = st.session_state.get("cadastro_sem_cores", False)
         for aviso_carga in st.session_state.cadastro_avisos_carga:
+            if sem_cores and "nenhuma cor de preenchimento" in aviso_carga:
+                continue    # substituido pelo aviso curto do quadro de conferencia, logo abaixo
             st.warning(aviso_carga, icon=":material/warning:")
+        quadro_conferencia = st.container()   # preenchido depois do editor, com o cadastro ja' editado
 
         # Diferencas entre a planilha reenviada e o cadastro ja' salvo: nada e' sobrescrito sem aceite.
         diferencas = st.session_state.cadastro_diferencas
@@ -654,10 +658,11 @@ if st.session_state.get("arquivos_confirmados") and "cadastro_trabalho" in st.se
             "admissao": st.column_config.DateColumn("Admissão", format="DD/MM/YYYY"),
             "beneficio": st.column_config.SelectboxColumn("Vale", options=opcoes_beneficio),
             "valor_va": st.column_config.NumberColumn("Valor do vale", format="R$ %.2f", min_value=0.0),
-            "va_fixo": st.column_config.CheckboxColumn("Vale fixo", help="Fixo: não sofre o desconto de 1/30 por falta."),
-            "va_desconto_manual": st.column_config.CheckboxColumn("Vale c/ desconto manual"),
+            "va_fixo": st.column_config.CheckboxColumn("Vale fixo", help="Marque quem tem vale fixo (verde escuro na planilha): não sofre o desconto de 1/30 por falta."),
+            "va_desconto_manual": st.column_config.CheckboxColumn(
+                "Vale c/ desconto manual", help="Marque quem tem desconto manual no vale (verde claro na planilha)."),
             "cooper": st.column_config.NumberColumn("Cooper", format="R$ %.2f", min_value=0.0),
-            "cooper_fixo": st.column_config.CheckboxColumn("Cooper fixo"),
+            "cooper_fixo": st.column_config.CheckboxColumn("Cooper fixo", help="Marque quem tem Cooper fixo (verde escuro na planilha)."),
             "desconto_folha": st.column_config.NumberColumn("Desconto em folha", format="R$ %.2f", min_value=0.0),
             "banco_horas": st.column_config.CheckboxColumn("Banco de horas"),
             "registra_ponto": st.column_config.CheckboxColumn("Registra ponto"),
@@ -671,6 +676,24 @@ if st.session_state.get("arquivos_confirmados") and "cadastro_trabalho" in st.se
         )
         editado = normalizar_para_edicao(retorno.drop(columns=["situacao"]))
         st.session_state.cadastro_editado = editado
+        with quadro_conferencia:
+            resumo = resumo_conferencia(editado)
+            st.markdown("**Conferência da leitura do cadastro**")
+            linhas_resumo = [f"{resumo['total']} colaborador(es)."]
+            for emp, tipos in resumo["vale_por_empresa"].items():
+                linhas_resumo.append(f"Empresa {emp}: " + ", ".join(f"{q} com {t}" for t, q in tipos.items()) + ".")
+            linhas_resumo.append(f"Sem vale: {resumo['sem_vale']}. Com Cooper: {resumo['cooper']}.")
+            linhas_resumo.append(
+                f"Marcados como vale fixo: {resumo['va_fixo']}; Cooper fixo: {resumo['cooper_fixo']}; "
+                f"vale com desconto manual: {resumo['va_desconto_manual']}."
+            )
+            formato = st.session_state.get("cadastro_formato_admissao") or "dia/mês/ano"
+            amostra = "; ".join(f"matrícula {m}: {d}" for m, d in resumo["amostra_admissoes"]) or "nenhuma admissão preenchida"
+            linhas_resumo.append(f"Datas de admissão lidas como {formato} ({resumo['admissoes_lidas']} preenchidas). Exemplos: {amostra}.")
+            st.markdown("\n".join(f"- {t}" for t in linhas_resumo))
+            if sem_cores and not (resumo["va_fixo"] or resumo["cooper_fixo"] or resumo["va_desconto_manual"]):
+                st.info("A planilha chegou sem cores; marque abaixo quem tem valor fixo ou desconto manual.",
+                        icon=":material/info:")
         problemas = validar_cadastro(editado, st.session_state.get("periodo_fim"),
                                      st.session_state.get("cadastro_linhas_planilha"))
         st.session_state.cadastro_bloqueado = tem_erros(problemas)

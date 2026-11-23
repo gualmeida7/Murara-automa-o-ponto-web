@@ -78,6 +78,13 @@ Ao confirmar os arquivos, o cadastro aparece numa tabela na própria tela. Nada 
   explica cada ocorrência, sempre indicando a **matrícula**.
 - **Erro** impede o fechamento: o botão "Validar dados" só libera quando não houver nenhum erro.
 - **Aviso** não impede; serve para você conferir.
+- No alto do quadro, a **Conferência da leitura do cadastro** resume quantos colaboradores usam Alelo ou Ticket em
+  cada empresa, quantos têm Cooper, quantos estão marcados como vale fixo, Cooper fixo ou vale com desconto manual, e
+  como as datas de admissão foram lidas (com exemplos em dd/mm/aaaa). Confira esses números antes de seguir.
+- **Cores da planilha:** o sistema usa as cores para saber quem tem valor fixo (verde escuro) e desconto manual no
+  vale (verde claro). Envie a planilha com as cores originais. Se ela chegar sem cores, a tela avisa e você marca
+  as colunas **Vale fixo**, **Cooper fixo** e **Vale c/ desconto manual** diretamente na tabela.
+- **Datas:** digite as admissões no formato dd/mm/aaaa (por exemplo, 16/11/2026) para evitar dúvidas de leitura.
 - **Salvar cadastro** guarda o cadastro no sistema. Na próxima vez, se você enviar outra planilha, o sistema
   mostra o que mudou (colaborador novo, ausente ou campo diferente) e só aplica o que você marcar em **Aceitar**.
   Sem marcar, vale o que já está salvo no sistema.

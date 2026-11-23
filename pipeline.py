@@ -16,11 +16,11 @@ Como rodar (depois de ajustar os caminhos dos arquivos reais no bloco
     python pipeline.py
 
 Duas rodadas por fechamento:
-  1. Rodada de EXCECOES: gera `fila_validacao_rh.csv`, que e' carregada no
-     dashboard_aprovacao.html para o RH/gestor classificar cada dia
-     estranho (falta real, erro de relogio, atestado, etc.).
-  2. Rodada FINAL: le as decisoes exportadas do dashboard
-     (`decisoes_rh.csv`) e gera a Relacao de Valores definitiva.
+  1. Rodada de EXCECOES: gera `fila_validacao_rh.csv`, com os dias que o
+     RH/gestor precisa classificar (falta real, erro de relogio, atestado, etc.).
+     No uso diario isso e' feito na tela (`app_web.py`).
+  2. Rodada FINAL: le as decisoes do RH (na tela, ou `decisoes_rh.csv` ao rodar
+     este arquivo direto) e gera a Relacao de Valores definitiva.
 """
 
 from __future__ import annotations
@@ -38,7 +38,7 @@ from afd_parser import agrupar_batidas_por_dia
 from leitores_ponto import ler_arquivo_ponto, ler_espelho_como_ponto
 from pdf_espelho_ponto import mapear_para_pis, parse_espelho_pdf
 from business_rules import (
-    Jornada, apurar_periodo, consolidar_mes, gerar_fila_validacao_rh, STATUS_FALTA_PARCIAL,
+    Jornada, LIMITE_FALTAS_COOPER_MIN, apurar_periodo, consolidar_mes, gerar_fila_validacao_rh, STATUS_FALTA_PARCIAL,
 )
 from banco_horas import consolidar_banco_horas, ler_banco_horas_secullum, ler_banco_horas_adriano
 from validacao import (
@@ -671,6 +671,13 @@ def rodada_2_gerar_relacao_de_valores(
     atraso_falta_banco = df["horas_falta"].where(no_banco & BANCO_ABSORVE_ATRASO_E_FALTA_PARCIAL, 0.0)
     perde_copr = df["perde_copr"].fillna(False).astype(object).where(registra_ponto, COPR_CONFERIR)
 
+    # Cooper: perde quando as faltas do mes passam de LIMITE_FALTAS_COOPER_MIN, salvo `cooper_fixo`
+    # e quem nao tem Cooper. O valor em si fica no cadastro; a Planilha do Thales o zera e anota.
+    minutos_faltas = df["minutos_faltas_cooper"].fillna(0)
+    valor_cooper = pd.to_numeric(df["cooper"], errors="coerce").fillna(0) if "cooper" in df.columns else pd.Series(0.0, index=df.index)
+    cooper_fixo = _flag_cadastro(df, "cooper_fixo", False)
+    cooper_zerado = (valor_cooper > 0) & ~cooper_fixo & registra_ponto & (minutos_faltas > LIMITE_FALTAS_COOPER_MIN)
+
     saida = pd.DataFrame({
         "codigo_empresa": df["codigo_empresa"],
         "razao_social": df["razao_social"],
@@ -690,6 +697,8 @@ def rodada_2_gerar_relacao_de_valores(
         # automaticamente na aba "Conferência RH" e nunca vazarem para a
         # aba "Contabilidade":
         "_perde_premio_copr": perde_copr,
+        "_cooper_zerado": cooper_zerado,
+        "_faltas_cooper_min": minutos_faltas.astype(int),
         "_banco_horas": no_banco.map({True: "Sim", False: "Não"}),
         "_he50_banco": he50_banco,
         "_he100_banco": he100_banco,
@@ -826,7 +835,7 @@ _CABECALHOS_CONTABIL = {
     COD_OUTROS_BANCO_HORAS: "Banco de Horas (0999)",
 }
 _COLUNAS_AUX = [
-    "_perde_premio_copr", "_dias_falta_total", "_dias_falta_justificada", "_dias_falta_injustificada",
+    "_perde_premio_copr", "_cooper_zerado", "_faltas_cooper_min", "_dias_falta_total", "_dias_falta_justificada", "_dias_falta_injustificada",
     "_dias_falta_parcial", "_horas_falta_parcial", "_atraso_horas", "_dias_desconto_va", "_semanas_perde_dsr",
     "_banco_horas", "_he50_banco", "_he100_banco", "_atraso_falta_parcial_banco",
 ]
@@ -838,7 +847,8 @@ _COLUNAS_CONFERENCIA_SECULLUM = [
     "_sec_he50", "_dif_he50", "_sec_he100", "_dif_he100",
 ]
 _CABECALHOS_AUX = {
-    "_perde_premio_copr": "Prêmio COPR", "_dias_falta_total": "Dias de Falta (total)",
+    "_perde_premio_copr": "Prêmio COPR", "_cooper_zerado": "Cooper zerado",
+    "_faltas_cooper_min": "Faltas p/ Cooper (min)", "_dias_falta_total": "Dias de Falta (total)",
     "_dias_falta_justificada": "Dias Falta Justificada", "_dias_falta_injustificada": "Dias Falta Injustificada",
     "_dias_falta_parcial": "Dias Falta Parcial", "_horas_falta_parcial": "Horas Falta Parcial",
     "_atraso_horas": "Horas de Atraso",
@@ -863,9 +873,10 @@ _COLUNAS_DECIMAIS = {
 _COLUNAS_INTEIRAS = {
     COD_DIAS_FALTA, "_dias_falta_total", "_dias_falta_justificada", "_dias_falta_injustificada",
     "_dias_falta_parcial", "_dias_desconto_va", "_semanas_perde_dsr", "_sec_dias_falta", "_dif_dias_falta",
+    "_faltas_cooper_min",
 }
 # Colunas centralizadas (codigos, matricula, competencia)
-_COLUNAS_CENTRALIZADAS = {"codigo_empresa", "competencia", "codigo_folha", "_perde_premio_copr", "_banco_horas"}
+_COLUNAS_CENTRALIZADAS = {"codigo_empresa", "competencia", "codigo_folha", "_perde_premio_copr", "_banco_horas", "_cooper_zerado"}
 
 
 def _perde_copr(valor) -> bool:
@@ -1038,6 +1049,8 @@ def _escrever_workbook_formatado(grupo: pd.DataFrame, caminho: Path) -> None:
                 v = linha[c]
                 if c == "_perde_premio_copr":
                     v = COPR_CONFERIR if v == COPR_CONFERIR else ("Perde" if bool(v) else "Não Perde")
+                elif c == "_cooper_zerado":
+                    v = "Sim" if bool(v) else "Não"
                 elif pd.isna(v):
                     v = None  # celula em branco (ex.: colaborador sem linha de TOTAIS no Secullum)
                 valores.append(v)
@@ -1379,14 +1392,14 @@ if __name__ == "__main__":
     )
     banco_horas = consolidar_banco_horas(cadastro["pis"].tolist(), banco_secullum, banco_adriano)
 
-    # Rodada 1: gera as excecoes para o RH validar no dashboard (aqui sim
+    # Rodada 1: gera as excecoes para o RH validar (aqui sim
     # entra o processamento pesado - ler e apurar o AFD inteiro)
     apuracao, fila = rodada_1_gerar_fila_de_excecoes(CAMINHO_AFD, cadastro, DATA_INICIO, DATA_FIM)
     fila_exportada = exportar_fila_validacao_rh(fila, cadastro, "saida/fila_validacao_rh.csv")
     print(f"{len(fila_exportada)} excecao(oes) geradas para validacao do RH -> saida/fila_validacao_rh.csv")
-    print("Abra o dashboard_aprovacao.html, carregue esse CSV, classifique as excecoes e exporte decisoes_rh.csv")
+    print("Classifique as excecoes (colunas classificacao/observacao) e salve o resultado como saida/decisoes_rh.csv")
 
-    # ---- (o RH classifica no dashboard e exporta decisoes_rh.csv aqui) ----
+    # ---- (o RH classifica as excecoes e salva decisoes_rh.csv aqui) ----
 
     # Rodada 2: com as decisoes do RH em maos, gera a Relacao de Valores final
     decisoes = pd.read_csv("saida/decisoes_rh.csv") if Path("saida/decisoes_rh.csv").exists() else None

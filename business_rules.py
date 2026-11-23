@@ -19,7 +19,7 @@ Nada aqui decide sozinho se uma falta e' justificada ou nao - isso exige
 julgamento humano (atestado medico, aviso previo, etc.). O papel deste
 modulo e' calcular tudo que PODE ser calculado automaticamente e isolar,
 em uma tabela separada, exatamente as linhas que precisam de decisao humana.
-Essa tabela e' o que alimenta o painel de aprovacao (dashboard_aprovacao.html).
+Essa tabela e' o que alimenta a tela de aprovacao do RH (`app_web.py`).
 """
 
 from __future__ import annotations
@@ -33,6 +33,9 @@ import pandas as pd
 
 TOLERANCIA_DIARIA_MIN = 10       # Art. 58 §1º CLT: limite maximo diario
 TOLERANCIA_POR_BATIDA_MIN = 5    # Art. 58 §1º CLT: limite por marcacao individual
+# Cooper: perde o valor quando as faltas do mes (dia inteiro + parcial, justificadas ou nao) passam
+# deste total de minutos (2:00). Exatamente 2:00 ainda mantem. Atraso e saida antecipada nao contam.
+LIMITE_FALTAS_COOPER_MIN = 120
 
 # Dia com 1, 2 ou 3 batidas que NAO cobre a jornada inteira: possivel falta de
 # meio periodo (ex.: faltou a tarde). Sempre vai para a fila do RH. Se nenhum
@@ -179,6 +182,7 @@ def apurar_dia(
         "he_100_min": 0,
         "atraso_min": 0,
         "minutos_falta_parcial": 0,
+        "minutos_falta_dia": 0,
         "feriado": feriado or "",
         "falta": False,
         "status": "OK",
@@ -207,6 +211,7 @@ def apurar_dia(
     # Dia normal de trabalho, sem nenhuma batida => possivel falta
     if n_batidas == 0:
         base["falta"] = True
+        base["minutos_falta_dia"] = jornada.carga_horaria_min()
         base["status"] = "FALTA_OU_AUSENCIA"
         base["precisa_validacao_rh"] = True
         base["motivo_validacao"] = "Nenhuma batida no dia - confirmar se e' falta real ou erro de relogio"
@@ -237,6 +242,7 @@ def apurar_dia(
                 # inteiro ausente, como o Secullum conta (FALTAS em dias). Entra
                 # como falta de dia inteiro, igual ao dia sem nenhuma batida.
                 base["falta"] = True
+                base["minutos_falta_dia"] = carga_min
                 base["motivo_validacao"] = (
                     f"{n_batidas} batida(s) no dia ({horarios}) - nenhum periodo completo; "
                     "possível falta do dia inteiro"
@@ -359,6 +365,8 @@ def consolidar_mes(
     df["data"] = pd.to_datetime(df["data"])
     if "minutos_falta_parcial" not in df.columns:
         df["minutos_falta_parcial"] = 0
+    if "minutos_falta_dia" not in df.columns:
+        df["minutos_falta_dia"] = 0
 
     if decisoes_rh is not None and not decisoes_rh.empty:
         decisoes = decisoes_rh.copy()
@@ -384,6 +392,8 @@ def consolidar_mes(
     df["e_falta_justificada"] = df["e_falta"] & (df["classificacao_efetiva"] == "FALTA_JUSTIFICADA")
     df["e_falta_parcial"] = contam & parcial
     df["min_falta_parcial_efetiva"] = df["minutos_falta_parcial"].where(df["e_falta_parcial"], 0)
+    # Cooper: so' faltas (dia inteiro + parcial, justificadas ou nao); atraso e saida antecipada ficam de fora.
+    df["min_falta_dia_efetiva"] = df["minutos_falta_dia"].where(df["e_falta"], 0)
     df["semana"] = df["data"].dt.isocalendar().week
 
     resumo = df.groupby("pis").agg(
@@ -391,6 +401,7 @@ def consolidar_mes(
         horas_extra_100_min=("he_100_min", "sum"),
         atraso_min=("atraso_min", "sum"),
         falta_parcial_min=("min_falta_parcial_efetiva", "sum"),
+        falta_dia_min=("min_falta_dia_efetiva", "sum"),
         dias_falta_parcial=("e_falta_parcial", "sum"),
         dias_falta=("e_falta", "sum"),
         dias_falta_justificada=("e_falta_justificada", "sum"),
@@ -419,6 +430,9 @@ def consolidar_mes(
     # Regra COPR: qualquer falta (inteira ou parcial, justificada ou nao) => perde o premio
     resumo["perde_copr"] = (resumo["dias_falta"] > 0) | (resumo["dias_falta_parcial"] > 0)
 
+    # Cooper: total de minutos de falta do mes (dia inteiro + parcial), para `perde_cooper` em pipeline.
+    resumo["minutos_faltas_cooper"] = (resumo["falta_dia_min"] + resumo["falta_parcial_min"]).astype(int)
+
     # Regra VA: apenas faltas inteiras SEM justificativa geram desconto proporcional
     resumo["dias_desconto_va"] = resumo["dias_falta_injustificada"]
 
@@ -433,7 +447,7 @@ def consolidar_mes(
         "pis", "horas_extra_50", "horas_extra_100", "atraso_min", "atraso_horas",
         "horas_falta", "horas_falta_parcial", "dias_falta_parcial",
         "dias_falta", "dias_falta_justificada", "dias_falta_injustificada", "dias_desconto_va",
-        "perde_copr", "semanas_perde_dsr",
+        "perde_copr", "semanas_perde_dsr", "minutos_faltas_cooper",
     ]]
 
 

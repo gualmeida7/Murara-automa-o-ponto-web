@@ -23,6 +23,8 @@ ponto vem de colunas OPCIONAIS do Cadastro de Colaboradores (vazias = celula em 
 
 VA: admitido no proprio mes = proporcional aos dias ate o fim do mes (base 30); cada falta inteira
 SEM justificativa desconta 1/30. Banco de horas e experiencia viram observacao automatica.
+Cooper: perde o valor (e a Observacao avisa) quando as faltas do mes passam de LIMITE_FALTAS_COOPER_MIN,
+salvo `cooper_fixo`; ver `pipeline.rodada_2_gerar_relacao_de_valores` (colunas `_cooper_zerado`).
 Nada aqui decide se a falta e' justificada: usa a decisao do RH (padrao conservador: injustificada).
 """
 
@@ -32,6 +34,8 @@ from datetime import date
 from pathlib import Path
 
 import pandas as pd
+
+from business_rules import LIMITE_FALTAS_COOPER_MIN
 
 CABECALHO_BENEFICIO_PADRAO = "Alelo Cartão"
 _FORMATO_REAL = '_-"R$"\\ * #,##0.00_-;\\-"R$"\\ * #,##0.00_-;_-"R$"\\ * "-"??_-;_-@_-'
@@ -164,6 +168,10 @@ def exportar_planilha_thales(
                 valor_va = round(valor_va - valor_dia_va * dias_desconto, 2)
             if admissao and (admissao.year, admissao.month) == (ano, mes):
                 obs.append(f"*Experiencia (Admitido em {admissao:%d/%m/%Y})")
+            valor_cooper = _numero(ficha.get("cooper"))
+            if _verdadeiro(p.get("_cooper_zerado")):
+                valor_cooper = 0.0
+                obs.append(f"*Cooper zerado (faltas no mês: {_hhmm(float(p.get('_faltas_cooper_min', 0)) / 60)}, limite {_hhmm(LIMITE_FALTAS_COOPER_MIN / 60)})")
             saldo = p.get(COD_BANCO)
             if str(p.get("_banco_horas")) == "Sim" and saldo is not None and pd.notna(saldo) and _hhmm(saldo):
                 obs.append(f"*Banco de Horas ({'-' if saldo < 0 else ''}{_hhmm(saldo)} {'Negativas' if saldo < 0 else 'Positivas'})")
@@ -180,7 +188,7 @@ def exportar_planilha_thales(
                 " e ".join(x for x in horas_com if x) or None,
                 " e ".join(x for x in horas_sem if x) or None,
                 _hhmm(p["0150"]) or None, _hhmm(p["0200"]) or None,
-                _numero(ficha.get("desconto_folha")), valor_va, _numero(ficha.get("cooper")),
+                _numero(ficha.get("desconto_folha")), valor_va, valor_cooper,
                 " | ".join(obs) or None,
             ]
             for col, v in enumerate(valores, start=1):

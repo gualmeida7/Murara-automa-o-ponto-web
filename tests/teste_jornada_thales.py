@@ -110,7 +110,8 @@ def test_planilha_do_thales_no_modelo_da_cliente():
     ana = [c.value for c in ws[6]]
     assert ana[:3] == [1, "07 e 25", "Ana da Silva"]
     assert ana[3] is None and ana[4] == "05/10/2026" and ana[5] == "00:50"      # falta sem atestado + HE 50%
-    assert ana[7] == 224 and ana[8] == 960 - 32 and ana[9] == 200 and ana[10] == "*venda 10X"   # 1/30 de VA por falta
+    assert ana[7] == 224 and ana[8] == 960 - 32 and ana[9] == 0   # 1/30 de VA por falta; falta de dia inteiro (9h) passa de 2h: Cooper zerado
+    assert ana[10].startswith("*venda 10X | *Cooper zerado (faltas no mês: 09:00, limite 02:00)")
     beto = [c.value for c in ws[7]]
     assert beto[2] == "Beto Novo" and beto[4] is None
     assert beto[8] == 576 and beto[10] == "*Experiencia (Admitido em 14/10/2026)"    # 18/30 do VA (14 a 31/10)
@@ -152,10 +153,10 @@ def test_va_fixo_nao_leva_desconto_de_1_30_e_vale_vem_da_empresa(tmp_path):
 def test_vale_com_desconto_manual_sai_cheio_com_aviso_e_cooper_fixo_nao_muda(tmp_path):
     base = dict(codigo_empresa="002", razao_social="EMPRESA B LTDA", entrada="07:30", saida_almoco="12:00",
                 retorno_almoco="13:00", saida="17:30", dias_trabalho="0,1,2,3,4", saida_sexta="16:30",
-                admissao="01/01/2020", valor_va=900, beneficio="Ticket", cooper=200)
+                admissao="01/01/2020", valor_va=900, beneficio="Ticket", cooper=0)
     ws = _planilha_thales_de([
         dict(base, pis="1", matricula="1"),
-        dict(base, pis="2", matricula="2", va_desconto_manual=True, cooper_fixo=True),
+        dict(base, pis="2", matricula="2", va_desconto_manual=True, cooper_fixo=True, cooper=200),
         dict(base, pis="3", matricula="3", va_desconto_manual=True, va_fixo=True),
     ], tmp_path)
     comum, manual, fixo_e_manual = ([c.value for c in ws[r]] for r in (6, 7, 8))
