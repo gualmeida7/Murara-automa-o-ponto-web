@@ -529,8 +529,11 @@ Todas podem ser alteradas na tela do cadastro ou no código.
 - **Sem coluna `demissao`**: quem saiu da empresa é retirado do cadastro; um consignado de matrícula fora do
   cadastro é ignorado com aviso.
 - **Marcas do cadastro** (`cooper_fixo` nas matrículas 41, 100, 71 e 68; `va_fixo` na 41;
-  `va_desconto_manual` na 51) vêm da análise anterior da planilha colorida, pois as cores não vieram nos arquivos
-  de 10/2026. Podem ser alteradas na tela do cadastro.
+  `va_desconto_manual` na 51): conferidas em 24/11/2026 nas cores da planilha original da cliente
+  (`cadastro_para_cliente_preencher(2).xlsx`; as cópias em `dados/` e `docs/` perderam as cores). A cliente
+  recebe a planilha-modelo com essas marcas como colunas sim/não, porque cor se perde ao salvar a planilha por
+  outro programa. Uma planilha que traga as colunas `va_fixo`, `cooper_fixo` ou `va_desconto_manual` não gera mais
+  o aviso de "sem cores". Podem ser alteradas na tela do cadastro.
 - **CNPJ da Maçaneiro** corrigido de `17.155.411/0001-22` para `17.155.411/0001-59`.
 - **Códigos de empresa**: `001` (Maçaneiro e Gonzaga) e `002` (Cianorte Tubos).
 - **Admissões em texto** são lidas como dia/mês/ano e as jornadas diferentes da maioria (matrículas 12, 51, 71,

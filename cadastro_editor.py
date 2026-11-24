@@ -440,7 +440,9 @@ def ler_cadastro_para_edicao(caminho: str) -> ResultadoCarga:
     if str(caminho).lower().endswith(".xlsx"):
         try:
             cores = _ler_cores(caminho)
-            if not cores and not _ha_preenchimento(caminho):
+            # Planilha com as colunas sim/não explícitas (modelo do sistema) não depende de cor: sem aviso.
+            traz_marcas = any(c in bruto.columns for c in ("va_fixo", "cooper_fixo", "va_desconto_manual"))
+            if not cores and not _ha_preenchimento(caminho) and not traz_marcas:
                 sem_cores = True
                 avisos.append(
                     "A planilha não traz nenhuma cor de preenchimento. Se a cliente marcava em verde os valores fixos "

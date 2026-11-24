@@ -4,8 +4,7 @@
 
 ## Lista do mês
 
-- [ ] No Secullum, exportar o **Cartão Ponto** (PDF) ou o **AFD** (.txt) do período.
-- [ ] No Secullum, exportar o **Espelho de Ponto** (PDF) do mesmo período (opcional, mas ajuda).
+- [ ] No Secullum, exportar o **Espelho de Ponto** (PDF) do período. Ele sozinho basta. Se tiver o **Cartão Ponto** (PDF) ou o **AFD** (.txt), pode enviar também.
 - [ ] Separar os **extratos de consignado**, um por empresa (opcional).
 - [ ] Separar os arquivos de **banco de horas**, só se alguém usar.
 - [ ] Atualizar o **Cadastro de Funcionários** (admissões, desligamentos, mudanças).
@@ -15,9 +14,8 @@
 
 | Arquivo | Obrigatório? | De onde vem | Onde enviar | Quando mudar |
 |---|---|---|---|---|
-| Cadastro de Funcionários (ex.: `cadastro_sintetico.xlsx`) | **Sim** | Você mesma mantém | Etapa 1 | Sempre que um funcionário mudar |
-| Cartão Ponto (PDF, ex.: `Cartão Ponto 09.2026.pdf`) **ou** AFD (.txt) | **Sim** (um dos dois) | Secullum, do período | Etapa 1 | Todo mês |
-| Espelho de Ponto (PDF, ex.: `Espelho de Ponto 09.2026.pdf`) | Não (recomendado) | Secullum, mesmo período | Etapa 1 | Todo mês |
+| Cadastro de Funcionários (modelo: `Cadastro_colaboradores_11_2026.xlsx`) | **Sim** | Você mesma mantém | Etapa 1 | Sempre que um funcionário mudar |
+| Espelho de Ponto (PDF, ex.: `Espelho de Ponto 11.26.pdf`), **ou** Cartão Ponto (PDF), **ou** AFD (.txt) | **Sim** (pelo menos um dos três) | Secullum, do período | Etapa 1 | Todo mês |
 | Extratos de consignado (ex.: `27488404000122-202609v1.4.xlsx` para a Cianorte Tubos e `17155411000159-202609v1.4.xlsx` para a Maçaneiro e Gonzaga; o número no início é o CNPJ da empresa) | Não | Banco/financeira, um por empresa | Etapa 1 | Todo mês |
 | Banco de horas | Só se alguém usar | Exportação do Secullum ou planilha semanal | Etapa 1 | Todo mês |
 
@@ -63,10 +61,24 @@ Colunas que a tela entende além das acima (também podem ser marcadas diretamen
 | cooper_fixo | sim/não: Cooper fixa todo mês | sim |
 | va_desconto_manual | sim/não: o desconto do vale é feito manualmente | não |
 
-Se a sua planilha usa os títulos "Cooper Card Assiduidade", "Alelo Alimentação" e "Ticket Alimentação", o sistema
-os reconhece: o valor de "Alelo Alimentação" vale para a empresa de código 001 e o de "Ticket Alimentação" para a
-002. As cores da planilha (verde forte = valor fixo; verde claro = desconto manual) são lidas apenas no envio e
-transformadas nas colunas acima; depois disso, valem as colunas.
+**Use a planilha-modelo (`Cadastro_colaboradores_11_2026.xlsx`).** Ela já vem com os dados de novembro e com as três
+colunas acima preenchidas com **sim** ou **não**. Para marcar uma exceção, escreva **sim** na coluna; **não pinte
+a célula**, porque a cor se perde quando a planilha é salva ou copiada por outro programa. O sistema ainda entende
+as cores da planilha antiga (verde forte = valor fixo; verde claro = desconto manual), mas só no envio.
+
+As colunas de valor são três: **Cooper Card Assiduidade** (valor da Cooper), **Alelo Alimentação** (vale da empresa
+001, Maçaneiro e Gonzaga) e **Ticket Alimentação** (vale da empresa 002, Cianorte Tubos). Cada colaborador tem valor só
+na coluna da sua empresa; a outra fica em branco ou zero.
+
+**Quando marcar cada coluna**
+
+| Situação | Coluna a marcar com "sim" |
+|---|---|
+| A Cooper é um valor fixo todo mês, que não é perdido por faltas | cooper_fixo |
+| O vale é um valor fixo, sem desconto por falta | va_fixo |
+| O desconto do vale por falta será feito à mão | va_desconto_manual |
+
+Quem não está marcado recebe a Cooper e o vale pelo valor da planilha, com as regras de desconto descritas mais abaixo.
 
 ### Revisar o cadastro dentro do sistema
 
@@ -81,9 +93,10 @@ Ao confirmar os arquivos, o cadastro aparece numa tabela na própria tela. Nada 
 - No alto do quadro, a **Conferência da leitura do cadastro** resume quantos colaboradores usam Alelo ou Ticket em
   cada empresa, quantos têm Cooper, quantos estão marcados como vale fixo, Cooper fixo ou vale com desconto manual, e
   como as datas de admissão foram lidas (com exemplos em dd/mm/aaaa). Confira esses números antes de seguir.
-- **Cores da planilha:** o sistema usa as cores para saber quem tem valor fixo (verde escuro) e desconto manual no
-  vale (verde claro). Envie a planilha com as cores originais. Se ela chegar sem cores, a tela avisa e você marca
-  as colunas **Vale fixo**, **Cooper fixo** e **Vale c/ desconto manual** diretamente na tabela.
+- **Valores fixos e desconto manual:** com a planilha-modelo, o sistema lê as colunas **Vale fixo**, **Cooper fixo** e
+  **Vale c/ desconto manual** (sim/não). Se enviar uma planilha antiga que só tem cores, ele converte as cores nessas
+  colunas. Se ela não tiver nem colunas nem cores, a tela avisa e você marca as três colunas diretamente na tabela.
+  Confira sempre o quadro da **Conferência da leitura do cadastro**: ele mostra quantos estão marcados em cada coluna.
 - **Datas:** digite as admissões no formato dd/mm/aaaa (por exemplo, 16/11/2026) para evitar dúvidas de leitura.
 - **Salvar cadastro** guarda o cadastro no sistema. Na próxima vez, se você enviar outra planilha, o sistema
   mostra o que mudou (colaborador novo, ausente ou campo diferente) e só aplica o que você marcar em **Aceitar**.
@@ -122,7 +135,7 @@ Ao confirmar os arquivos, o cadastro aparece numa tabela na própria tela. Nada 
 **3. Etapa 2 – Período e validação.** Escolha a data inicial e a final (normalmente 26 a 25) e clique em **"Validar dados"**.
 Se aparecer um PIS ou matrícula que não está no cadastro, o sistema mostra **o arquivo e o número exatos**. Corrija no Cadastro de Funcionários e envie os arquivos de novo. [Print: aviso de validação]
 
-**4. Etapa 3 – Processamento.** Clique em **"Processar ponto e calcular fechamento"**. Marque a caixa dos feriados facultativos (Carnaval, Corpus Christi, 24 e 31 de dezembro) **somente se a empresa der esse dia de folga**. [Print: botão de processar]
+**4. Etapa 3 – Processamento.** Marque a caixa dos feriados facultativos (Carnaval, Corpus Christi, 24 e 31 de dezembro) **somente se a empresa der esse dia de folga**. Se o relógio falhou para todos em algum dia, preencha **"Dias abonados para todos"** (veja abaixo). Depois clique em **"Processar ponto e calcular fechamento"**. [Print: botão de processar]
 
 > **Aviso possível: "colaboradores estão no cadastro mas não têm nenhuma batida no ponto".**
 > Se você não fizer nada, o período inteiro deles vira falta. Selecione as pessoas e escolha uma ação:
@@ -147,7 +160,9 @@ Linha em branco conta como falta injustificada (é a opção mais segura). Seu p
 
 **6. Etapa 5 – Download.** Clique em **"Gerar fechamento final"**. Baixe os arquivos (botão **"Baixar"**) ou tudo junto (**"Baixar todos os arquivos (.zip)"**). Saem: **uma "Relação de Valores" por empresa**, igual à planilha que você envia ao escritório (horas no formato hh.mm, como você digita; aba **"Contabilidade"** para enviar e aba **"Conferência RH"** para você conferir), e a **Planilha do Thales**, com o resumo das duas empresas. O banco de horas (0999) sai em branco na planilha do escritório, como você faz hoje; o saldo aparece nas Observações da planilha do Thales.
 
-**Dia em que o relógio falhou para todos:** na Etapa 2, preencha **"Dias abonados para todos"** (ex.: `14/10/2026, 15/10/2026`) antes de processar. Quem não fechou as 4 batidas nesses dias não leva falta nem perde DSR, VA ou COPR. [Print: botões de download]
+**Dia em que o relógio falhou para todos:** na Etapa 3, antes de processar, preencha **"Dias abonados para todos"** (ex.: `14/10/2026, 15/10/2026`). Quem não fechou as 4 batidas nesses dias não leva falta nem perde DSR, VA, COPR ou Cooper. Se mudar o campo depois de processar, clique em processar de novo. [Print: botões de download]
+
+**Fechamento parcial (ponto só até uma data):** se o Espelho de Ponto ainda não cobre o período inteiro (por exemplo, o mês não terminou), abone os dias que faltam no mesmo campo. O resultado vale só até a última data com ponto e deve ser refeito quando o arquivo completo chegar.
 
 ## Quando os funcionários mudam
 
@@ -166,7 +181,8 @@ Linha em branco conta como falta injustificada (é a opção mais segura). Seu p
 
 > - Feriado **não** é falta. Trabalhar em feriado ou domingo paga **hora extra de 100%**.
 > - **Qualquer** falta no mês, mesmo justificada, faz perder o prêmio **COPR**.
-> - Só a falta **injustificada** desconta o vale-alimentação (VA) e o descanso semanal (DSR).
+> - A **Cooper** (R$ 200 para a maioria) é perdida quando as **faltas do mês passam de 2 horas no total**, justificadas ou não. Exatamente 2 horas ainda mantém. Contam faltas de dia inteiro (a carga do dia) e faltas parciais; atraso não conta. Não é afetado quem está com **cooper_fixo = sim**, quem não tem Cooper e quem tem **registra_ponto = não**. Quando a Cooper é zerada, a Planilha do Thales sai com R$ 0,00 e uma observação com o total de faltas, e a aba "Conferência RH" mostra as colunas "Cooper zerado" e "Faltas p/ Cooper (min)".
+> - Só a falta **injustificada** desconta o vale-alimentação (VA, 1/30 por falta de dia inteiro) e o descanso semanal (DSR). Vale fixo nunca é descontado. No vale com desconto manual, o valor sai cheio e a Observação da Planilha do Thales informa quantos dias de falta você deve descontar à mão.
 > - O sistema **nunca** decide sozinho se uma falta é justificada. Essa decisão é sempre sua.
 > - Evite atualizar a página (F5) ou fechar a aba no meio do trabalho. O rascunho fica salvo, mas é mais seguro terminar a revisão de uma vez.
 

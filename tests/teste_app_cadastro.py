@@ -123,8 +123,17 @@ def test_salvar_e_reenviar_planilha_diferente_mostra_diferencas_sem_sobrescrever
 
 
 def test_tela_mostra_conferencia_e_aviso_de_planilha_sem_cores():
-    at = _enviar_e_confirmar(_xlsx(_linha("1", beneficio="Alelo Cartão", cooper=200.0, admissao="2026-11-16"),
-                                   _linha("2", codigo_empresa="002", beneficio="Ticket")))
+    # planilha sem cor e SEM as colunas sim/não das marcas (como a original da cliente salva por outra ferramenta)
+    import io
+    import openpyxl
+    wb = openpyxl.load_workbook(io.BytesIO(_xlsx(_linha("1", beneficio="Alelo Cartão", cooper=200.0, admissao="2026-11-16"),
+                                                 _linha("2", codigo_empresa="002", beneficio="Ticket"))))
+    ws = wb.active
+    for c in [c for c in ws[1] if c.value in ("va_fixo", "cooper_fixo", "va_desconto_manual")][::-1]:
+        ws.delete_cols(c.column)
+    buf = io.BytesIO()
+    wb.save(buf)
+    at = _enviar_e_confirmar(buf.getvalue())
     texto = " ".join(m.value for m in at.markdown)
     assert "Conferência da leitura do cadastro" in texto and "Empresa 001: 1 com Alelo Cartão" in texto
     assert "Empresa 002: 1 com Ticket" in texto and "Com Cooper: 1" in texto

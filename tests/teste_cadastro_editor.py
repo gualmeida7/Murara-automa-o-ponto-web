@@ -403,3 +403,17 @@ def test_sem_cores_e_exposto_e_resumo_conta_vale_cooper_e_marcas(tmp_path):
     com_cor = ler_cadastro_para_edicao(str(_montar_xlsx(
         tmp_path / "d.xlsx", [_linha(1, cooper=200, alelo=1000)], extras_linha_a_linha={(2, 16): VERDE_FORTE})))
     assert com_cor.sem_cores is False and resumo_conferencia(com_cor.df)["cooper_fixo"] == 1
+
+
+def test_planilha_modelo_com_colunas_sim_nao_nao_avisa_falta_de_cor(tmp_path):
+    """O modelo entregue à cliente traz va_fixo/cooper_fixo/va_desconto_manual como sim/não: não depende de cor."""
+    from cadastro_editor import cadastro_para_xlsx_bytes
+    base = ler_cadastro_para_edicao(str(_montar_xlsx(
+        tmp_path / "c.xlsx", [_linha(1, cooper=200, alelo=1000), _linha(2, cooper=200, alelo=900)],
+        extras_linha_a_linha={(2, 16): VERDE_FORTE}))).df
+    modelo = tmp_path / "modelo.xlsx"
+    modelo.write_bytes(cadastro_para_xlsx_bytes(base))
+    res = ler_cadastro_para_edicao(str(modelo))
+    assert res.sem_cores is False
+    assert not any("nenhuma cor de preenchimento" in a for a in res.avisos), res.avisos
+    assert res.df.set_index("matricula")["cooper_fixo"].to_dict() == {"1": True, "2": False}
